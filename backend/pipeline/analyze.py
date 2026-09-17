@@ -36,6 +36,11 @@ PLATE_FIX_PENALTY = 0.2
 # Выбрано 0.40: верных столько же, сколько до всех правок, а неверных вдвое меньше.
 PLATE_READABLE_MIN = 0.40
 PLATE_SURE_MIN = 0.60
+# У специализированного распознавателя своя шкала уверенности, поэтому и порог свой.
+# Замер на тех же 25 кадрах (верно/неверно): 0.30 — 11/1, 0.40 — 10/1, 0.60 — 8/0.
+# Выбрано 0.30: единственная ошибка (кадр 2, «691» вместо «681») имеет оценку 0.58 и
+# никаким разумным порогом не отсекается, так что терять из-за неё верные прочтения незачем.
+PLATE_READABLE_MIN_FAST = 0.30
 
 
 def plate_reliability(p) -> float:
@@ -146,7 +151,9 @@ def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bo
             if found:
                 best = found[0]
                 reliability = plate_reliability(best)
-                readable = reliability >= PLATE_READABLE_MIN
+                порог = (PLATE_READABLE_MIN_FAST if getattr(best, "source", "") == "fast"
+                         else PLATE_READABLE_MIN)
+                readable = reliability >= порог
                 entry["license_plate"] = {
                     # Ненадёжное прочтение не выдаём за номер: выдуманный номер хуже пустого поля.
                     "text": best.text if readable else None,

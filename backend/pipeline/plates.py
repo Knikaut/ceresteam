@@ -109,6 +109,7 @@ class PlateResult:
     raw: str = ""
     region_valid: bool = True
     fixes: int = 0            # правок символов при подгонке под шаблон
+    source: str = "easyocr"   # каким распознавателем прочитано: easyocr | fast
 
     votes: float = 0.0        # доля прочтений, совпавших с этим вариантом (0..1)
 
@@ -480,6 +481,7 @@ def _from_kz_result(res, box, offset) -> PlateResult | None:
         region_valid=True,          # раскладка принимается только с живым кодом региона
         fixes=0,
         votes=res.confidence,
+        source="fast",
     )
 
 
