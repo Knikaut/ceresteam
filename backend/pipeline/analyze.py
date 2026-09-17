@@ -50,6 +50,8 @@ def set_country(entry: dict) -> None:
     """Страна производителя: по справочнику марок, иначе оценка VLM."""
     country = makes.country_for(entry.get("manufacturer")) or entry.get("vlm_country")
     entry["manufacturer_country"] = country
+    # Служебной подсказке VLM не место в итоговом отчёте.
+    entry.pop("vlm_country", None)
 
 
 def apply_registry(entry: dict, record: dict | None) -> None:
@@ -61,8 +63,10 @@ def apply_registry(entry: dict, record: dict | None) -> None:
         if entry.get("manufacturer") and not makes.same_make(entry["manufacturer"], record["manufacturer"]):
             entry["notes"] += (f"Надпись на технике: {entry['manufacturer']}, реестр: {record['manufacturer']}. ")
             if not record.get("model"):
-                # Модель относилась к другой марке — сбрасываем.
-                entry["model"] = "не определена"
+                # Модель относилась к другой марке — сбрасываем. Именно None, а не строка:
+                # иначе ниже «if not entry.get("model")» никогда не сработает и модель от VLM
+                # уже не подставится.
+                entry["model"] = None
                 entry["model_confidence"] = None
         entry["manufacturer"] = record["manufacturer"]
         entry["manufacturer_confidence"] = "высокая (реестр data.egov.kz по госномеру)"
@@ -172,7 +176,9 @@ def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bo
                                           "confidence": None, "notes": "Номер не найден или не читается"}
 
             # Марка/модель по приоритету: реестр по номеру -> надпись -> VLM.
-            if use_registry and entry["license_plate"].get("readable"):
+            if not use_registry:
+                entry["registry_status"] = registry.DISABLED
+            elif entry["license_plate"].get("readable"):
                 status, record = registry.lookup_status(entry["license_plate"]["text"])
                 entry["registry_status"] = status
                 apply_registry(entry, record)

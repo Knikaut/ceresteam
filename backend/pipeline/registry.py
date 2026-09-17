@@ -16,6 +16,7 @@ import re
 import time
 import urllib.error
 import urllib.parse
+import os
 import urllib.request
 from pathlib import Path
 
@@ -45,9 +46,50 @@ TYPE_CODES = {"1": "мототранспорт", "2": "легковой авто
 
 _cache: dict[str, dict | None] | None = None
 
+# Снимок набора, скачанный tools/fetch_registry.py: поиск идёт по нему, без интернета.
+SNAPSHOT_NAME = "registry/registered_vehicles.jsonl"
+# «Не найден», полученный из сети, живёт сутки: набор обновляется, а вечный отказ
+# запоминал бы и случайную ошибку поиска.
+NEGATIVE_TTL = 24 * 3600
+_snapshot: dict[str, dict] | None = None
+
+
+def snapshot_path() -> Path | None:
+    """Путь считаем каждый раз: RESULTS_DIR подменяется в тестах и задаётся окружением."""
+    env = os.environ.get("REGISTRY_SNAPSHOT")
+    candidates = [Path(env)] if env else []
+    candidates += [Path(config.ROOT) / "data" / SNAPSHOT_NAME, Path(config.RESULTS_DIR) / SNAPSHOT_NAME]
+    return next((p for p in candidates if p.exists()), None)
+
+
+def _load_snapshot() -> dict[str, dict]:
+    """Номер -> строка набора. Читается один раз, это около 25 тысяч записей и 5 МБ."""
+    global _snapshot
+    if _snapshot is None:
+        _snapshot = {}
+        path = snapshot_path()
+        if path:
+            with path.open(encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    key = _normalize_plate(str(row.get("reg_number", "")))
+                    if key:
+                        _snapshot.setdefault(key, row)
+    return _snapshot
+
 
 def enabled() -> bool:
     return config.REGISTRY_ENABLED.lower() not in ("0", "false", "off", "no")
+
+
+def _cached(value) -> tuple[dict | None, float | None]:
+    """Разбирает запись кэша: (запись или None, когда записан отрицательный ответ)."""
+    if isinstance(value, dict) and value.get("__missing__"):
+        return None, value.get("at")
+    return (value or None), None
 
 
 def _load_cache() -> dict:
@@ -151,10 +193,19 @@ def lookup_status(plate: str | None, use_cache: bool = True) -> tuple[str, dict 
     key = _normalize_plate(plate or "")
     if not key:
         return NOT_FOUND, None
+    snapshot = _load_snapshot()
+    if key in snapshot:
+        return FOUND, _to_record(snapshot[key], key)
+
     cache = _load_cache()
     if use_cache and key in cache:
-        record = cache[key]
-        return (FOUND if record else NOT_FOUND), record
+        record, stamped = _cached(cache[key])
+        # Отрицательный ответ из сети держим сутки, найденную запись — бессрочно.
+        if record or stamped is None or time.time() - stamped < NEGATIVE_TTL:
+            return (FOUND if record else NOT_FOUND), record
+    if snapshot:
+        # Снимок набора есть и номера в нём нет — это и есть ответ, в сеть не идём.
+        return NOT_FOUND, None
     if time.monotonic() < _offline_until:
         return UNAVAILABLE, None
 
@@ -169,6 +220,6 @@ def lookup_status(plate: str | None, use_cache: bool = True) -> tuple[str, dict 
 
     match = next((r for r in rows if _normalize_plate(str(r.get("reg_number", ""))) == key), None)
     record = _to_record(match, key) if match else None
-    cache[key] = record
+    cache[key] = record if record else {"__missing__": True, "at": time.time()}
     _save_cache()
     return (FOUND if record else NOT_FOUND), record

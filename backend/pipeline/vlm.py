@@ -258,8 +258,15 @@ def describe_vehicle(crop_bgr: np.ndarray, hints: str = "") -> dict | None:
             last_error = f"OpenRouter: {type(e).__name__}"
             return None
 
-    import anthropic
-    client = _get_client()
+    try:
+        client = _get_client()
+    except Exception as e:
+        # Ключа нет или он негоден: пайплайн работает и без описания внешности,
+        # ронять из-за этого обработку 22 тысяч кадров нельзя.
+        global _available
+        _available = False
+        last_error = f"Anthropic: {type(e).__name__}"
+        return None
     try:
         response = client.beta.messages.create(
             model=config.VLM_MODEL,

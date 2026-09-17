@@ -10,7 +10,7 @@ from pathlib import Path
 
 CSV_FIELDS = [
     "source_image", "timestamp_on_frame", "id", "category", "on_scale", "equipment_type",
-    "manufacturer", "manufacturer_country", "model", "year", "make_model_source", "plate_number", "plate_format", "plate_country",
+    "manufacturer", "manufacturer_country", "model", "year", "make_model_confidence", "plate_number", "plate_format", "plate_country",
     "plate_region_code", "color", "load_state", "has_trailer",
     "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2", "detection_confidence", "notes",
 ]
@@ -33,7 +33,8 @@ def detection_rows(report: dict) -> list[dict]:
             "manufacturer_country": d.get("manufacturer_country"),
             "model": d.get("model"),
             "year": d.get("year"),
-            "make_model_source": d.get("manufacturer_confidence"),
+            # В строке уверенности уже назван источник: «высокая (реестр data.egov.kz по госномеру)».
+            "make_model_confidence": d.get("manufacturer_confidence"),
             "plate_number": plate.get("formatted"),
             "plate_format": plate.get("format"),
             "plate_country": plate.get("country"),
