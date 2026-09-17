@@ -1,0 +1,5 @@
+# Единые окончания строк (LF) в репозитории независимо от ОС разработчика.
+* text=auto eol=lf
+*.jpg binary
+*.png binary
+*.pt binary

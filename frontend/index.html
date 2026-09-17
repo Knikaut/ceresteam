@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Весовая · контроль техники</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">В</span> ВЕСОВАЯ AI <span class="tag">AGRO</span></div>
+  <div class="topbar-title">Контроль техники и рейсов на весовой</div>
+  <div class="topbar-right">
+    <span id="role-label" class="role-label"></span>
+    <button id="btn-role" class="ghost" title="Выбрать другую роль">Сменить роль</button>
+    <button id="btn-reset" class="ghost" title="Очистить базу для нового демо">Сброс демо</button>
+  </div>
+</header>
+
+<div id="role-screen" class="role-screen hidden">
+  <div class="role-card">
+    <div class="brand dark"><span class="logo">В</span> ВЕСОВАЯ AI</div>
+    <h1>Кто работает с системой?</h1>
+    <p class="muted">Выбор запоминается на этом компьютере. Сменить роль можно в верхней панели.</p>
+    <div class="role-options">
+      <button class="role-option" data-role="weigher">
+        <span class="role-icon">⚖️</span>
+        <b>Весовщик</b>
+        <span class="muted small">Чат с ИИ: снимок с камеры, фамилия, культура, вес. Заезд и выезд машин.</span>
+      </button>
+      <button class="role-option" data-role="manager">
+        <span class="role-icon">🗺️</span>
+        <b>Руководитель</b>
+        <span class="muted small">Карта складов, машины на территории, рейсы, тревоги.</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<main class="layout">
+  <!-- Левая колонка: машины -->
+  <aside class="panel left">
+    <div class="panel-head">
+      <div><b>Техника</b><div class="muted small">профили машин из базы</div></div>
+      <span id="vehicle-count" class="badge">0 ед.</span>
+    </div>
+    <input id="search" class="search" placeholder="Поиск: №, госномер, марка…">
+    <div id="vehicle-list" class="vehicle-list"><div class="empty">Пока нет машин. Сделайте снимок с камеры.</div></div>
+  </aside>
+
+  <!-- Центр: чат -->
+  <section class="panel center">
+    <div class="panel-head">
+      <div><b>Чат с ИИ-ассистентом</b> <span class="muted small">· общий · анализ снимков с весовой</span></div>
+      <div class="camera-bar">
+        <span class="dot green"></span><span id="camera-info" class="small muted">камера…</span>
+        <select id="frame-select" class="small" title="Выбрать кадр вручную"></select>
+        <button id="btn-capture" class="primary small">📷 Снимок с камеры</button>
+        <label class="ghost small btn-like">Загрузить фото<input id="file-input" type="file" accept="image/*" hidden></label>
+      </div>
+    </div>
+
+    <div id="messages" class="messages"></div>
+
+    <form id="composer" class="composer">
+      <div id="attachment" class="attachment hidden">
+        <img id="attachment-img" alt="снимок">
+        <div class="attachment-meta">
+          <div id="attachment-name"></div>
+          <div class="small muted">снимок с камеры прикреплён автоматически</div>
+        </div>
+        <button type="button" id="attachment-remove" class="ghost small">✕</button>
+      </div>
+      <div id="composer-hint" class="composer-hint small hidden" role="alert"></div>
+      <div class="fields">
+        <input id="f-driver" placeholder="Фамилия водителя">
+        <input id="f-crop" placeholder="Культура (пшеница, ячмень…)">
+        <select id="f-warehouse"></select>
+        <input id="f-weight" placeholder="Вес, т (пусто = весы)">
+        <input id="f-plate" placeholder="Номер, если ИИ ошибся">
+      </div>
+      <div class="composer-row">
+        <input id="f-note" placeholder="Заметка охранника (необязательно)…">
+        <button id="btn-send" type="submit" class="primary" disabled>Отправить</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- Правая колонка: склады -->
+  <aside class="panel right">
+    <div class="panel-head">
+      <div><b>Склады в полях</b><div class="muted small">карта OSM / спутник · склады условные; события — с камер</div></div>
+      <span class="badge live">● LIVE</span>
+    </div>
+    <div id="map" class="map"><div class="map-offline muted small">Карта не загрузилась (нет интернета?) — маркеры складов всё равно доступны ниже.</div></div>
+    <div id="warehouse-list" class="warehouse-list"></div>
+  </aside>
+</main>
+
+<footer class="statusbar">
+  <span><span class="dot green"></span> Система активна</span>
+  <span id="status-camera">Камера: —</span>
+  <span id="status-vlm">VLM: —</span>
+  <span id="status-time">—</span>
+  <span id="status-territory">На территории: 0 ед.</span>
+</footer>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <button id="modal-close" class="ghost modal-close">✕</button>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<div id="lightbox" class="lightbox hidden"><img alt=""></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

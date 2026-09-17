@@ -1,0 +1,161 @@
+:root {
+  --bg: #f3f5f8; --panel: #fff; --line: #e3e7ee; --text: #1c2533; --muted: #6b7788;
+  --blue: #1f6fe5; --blue-soft: #e8f0fe; --green: #22a55b; --red: #d94848; --amber: #e0a100;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { font: 14px/1.4 "Segoe UI", system-ui, sans-serif; color: var(--text); background: var(--bg); display: flex; flex-direction: column; }
+button, input, select { font: inherit; }
+button { cursor: pointer; border: 1px solid var(--line); background: #fff; color: var(--text); border-radius: 8px; padding: 6px 12px; }
+button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+button.primary:disabled { opacity: .5; cursor: default; }
+button.ghost { background: transparent; }
+.btn-like { display: inline-block; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; background: #fff; }
+.small { font-size: 12px; }
+.muted { color: var(--muted); }
+.hidden { display: none !important; }
+.badge { background: var(--blue-soft); color: var(--blue); border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.badge.live { background: #e6f7ed; color: var(--green); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot.green { background: var(--green); }
+.dot.gray { background: #b8c0cc; }
+
+.topbar { height: 48px; background: #101826; color: #fff; display: flex; align-items: center; padding: 0 16px; gap: 24px; }
+.brand { font-weight: 700; letter-spacing: .5px; display: flex; align-items: center; gap: 8px; }
+.logo { display: inline-flex; width: 26px; height: 26px; border-radius: 6px; background: var(--blue); align-items: center; justify-content: center; }
+.tag { background: #2a3a55; font-size: 10px; padding: 2px 6px; border-radius: 4px; }
+.topbar-title { flex: 1; text-align: center; opacity: .85; }
+.topbar-right { display: flex; align-items: center; gap: 8px; }
+.topbar .ghost { color: #fff; border-color: #3a4a66; }
+.role-label { font-size: 12px; background: #2a3a55; padding: 3px 10px; border-radius: 999px; }
+
+/* Экран выбора роли */
+.role-screen { position: fixed; inset: 0; background: #101826; display: flex; align-items: center; justify-content: center; z-index: 40; }
+.role-card { background: #fff; border-radius: 16px; padding: 32px 36px; width: min(760px, 92vw); text-align: center; }
+.role-card h1 { margin: 16px 0 6px; font-size: 24px; }
+.brand.dark { justify-content: center; color: var(--text); }
+.role-options { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 22px; }
+.role-option { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 16px; border: 2px solid var(--line); border-radius: 14px; background: #f9fafc; font-size: 16px; }
+.role-option:hover { border-color: var(--blue); background: var(--blue-soft); }
+.role-icon { font-size: 34px; }
+
+/* Раскладка по ролям */
+body.role-weigher .panel.left, body.role-weigher .panel.right { display: none; }
+body.role-weigher .layout { grid-template-columns: minmax(0, 1100px); justify-content: center; }
+body.role-manager .panel.center { display: none; }
+body.role-manager .layout { grid-template-columns: 340px 1fr; }
+body.role-manager .map { height: 56vh; min-height: 380px; }
+body.role-manager .warehouse-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+body.role-manager .wh-marker { font-size: 12px; padding: 6px 10px; }
+body.role-manager .wh-marker b { font-size: 13px; }
+body.role-weigher #btn-reset { display: none; }  /* сброс базы — не для весовщика */
+
+.layout { flex: 1; display: grid; grid-template-columns: 300px 1fr 400px; gap: 10px; padding: 10px; min-height: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.search { margin: 10px 12px 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.empty { padding: 20px; color: var(--muted); text-align: center; }
+
+/* Машины */
+.vehicle-list { overflow-y: auto; flex: 1; }
+.vehicle { display: grid; grid-template-columns: 1fr 76px; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.vehicle:hover { background: #f7f9fc; }
+.vehicle .vid { font-weight: 700; font-size: 15px; }
+.vehicle .vid .no { font-family: var(--mono); font-size: 18px; color: var(--blue); margin-right: 4px; }
+.vehicle .vid.tmp .no { color: var(--amber); }
+.vehicle img { width: 76px; height: 56px; object-fit: cover; border-radius: 6px; background: #eef1f5; }
+.vehicle .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+/* Чат */
+.camera-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.camera-bar select { max-width: 120px; padding: 5px 6px; border: 1px solid var(--line); border-radius: 8px; }
+.messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; background: #f9fafc; }
+.msg { max-width: 82%; border-radius: 12px; padding: 10px 12px; background: #fff; border: 1px solid var(--line); }
+.msg.guard { align-self: flex-end; background: var(--blue-soft); border-color: #cfdcf7; }
+.msg.ai { align-self: flex-start; }
+.msg .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; display: flex; justify-content: space-between; gap: 12px; }
+.msg img.shot { width: 100%; max-height: 300px; object-fit: cover; border-radius: 8px; cursor: zoom-in; display: block; margin: 6px 0; }
+.msg .text { white-space: pre-wrap; }
+.msg .alert { color: var(--red); font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip { font-size: 12px; padding: 3px 8px; border-radius: 6px; background: #f1f3f7; border: 1px solid var(--line); }
+.chip.ok { background: #e6f7ed; border-color: #bfe8cf; }
+.chip.warn { background: #fdecec; border-color: #f5c2c2; color: var(--red); }
+.chip.entry { background: #e8f0fe; border-color: #cfdcf7; color: var(--blue); }
+.chip.exit { background: #fff4e0; border-color: #f2dcaa; color: #9a6b00; }
+.chip.link { cursor: pointer; text-decoration: underline dotted; }
+.files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.files a { font-size: 12px; text-decoration: none; color: var(--blue); border: 1px solid #cfdcf7; border-radius: 6px; padding: 3px 8px; }
+.plate-zoom { height: 44px; border-radius: 4px; border: 1px solid var(--line); vertical-align: middle; margin-left: 6px; }
+.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #cfd8e6; border-top-color: var(--blue); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; margin-right: 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.composer { border-top: 1px solid var(--line); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.attachment { display: flex; align-items: center; gap: 10px; background: #f7f9fc; border: 1px dashed #c9d3e2; border-radius: 8px; padding: 6px 8px; }
+.attachment img { width: 96px; height: 56px; object-fit: cover; border-radius: 6px; }
+.attachment-meta { flex: 1; }
+.fields { display: grid; grid-template-columns: 1.2fr 1.2fr 1.3fr .9fr 1fr; gap: 6px; }
+.fields input, .fields select, .composer-row input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.fields input.invalid, .composer-row input.invalid { border-color: var(--red); background: #fdf6f6; }
+.composer-hint { color: var(--red); font-weight: 600; }
+.composer-row { display: flex; gap: 8px; }
+.composer-row input { flex: 1; }
+
+/* Склады */
+.map { position: relative; height: 280px; margin: 12px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: #e9ecef; z-index: 0; }
+.map-offline { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 20px; }
+.wh-marker { background: #fff; border: 2px solid var(--blue); border-radius: 8px; padding: 4px 8px; font-size: 11px; line-height: 1.2; white-space: nowrap; box-shadow: 0 2px 6px rgba(0,0,0,.25); position: relative; cursor: pointer; }
+.wh-marker b { display: block; font-size: 12px; }
+.wh-marker .cnt { position: absolute; top: -10px; right: -10px; background: var(--blue); color: #fff; border-radius: 999px; min-width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; }
+.wh-marker .cnt.zero { background: #9aa6b8; }
+.wh-marker.alert { border-color: var(--red); }
+.leaflet-div-icon { background: transparent; border: 0; }
+.map-gps { position: absolute; left: 8px; bottom: 8px; z-index: 500; background: rgba(16,24,38,.8); color: #fff; font-size: 11px; padding: 3px 8px; border-radius: 6px; }
+.warehouse-list { overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+.wcard { border: 1px solid var(--line); border-radius: 10px; padding: 10px; cursor: pointer; }
+.wcard:hover { background: #f7f9fc; }
+.wcard .row { display: flex; justify-content: space-between; gap: 8px; }
+.bar { height: 6px; background: #eef1f5; border-radius: 3px; margin-top: 6px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--green), var(--amber)); }
+
+.statusbar { height: 30px; display: flex; gap: 24px; align-items: center; padding: 0 16px; font-size: 12px; color: var(--muted); background: #fff; border-top: 1px solid var(--line); }
+.statusbar span:last-child { margin-left: auto; }
+
+/* Модальные окна */
+.modal { position: fixed; inset: 0; background: rgba(16, 24, 38, .45); display: flex; align-items: center; justify-content: center; z-index: 20; }
+.modal-card { background: #fff; border-radius: 14px; width: min(920px, 94vw); max-height: 90vh; overflow-y: auto; padding: 20px 22px; position: relative; }
+.modal-close { position: absolute; top: 10px; right: 10px; }
+.modal h2 { margin: 0 0 4px; font-family: var(--mono); }
+.modal h3 { margin: 18px 0 8px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.kv { display: grid; grid-template-columns: 180px 1fr; gap: 4px 12px; }
+.kv div:nth-child(odd) { color: var(--muted); }
+.modal .photo { width: 100%; max-height: 260px; object-fit: cover; border-radius: 10px; margin: 10px 0; cursor: zoom-in; }
+.modal .hero { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
+.modal .hero img { width: 100%; height: 180px; object-fit: cover; border-radius: 10px; cursor: zoom-in; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; background: #eef1f5; }
+.pill.open { background: #e8f0fe; color: var(--blue); }
+.pill.closed { background: #e6f7ed; color: var(--green); }
+.pill.red { background: #fdecec; color: var(--red); }
+.events { display: flex; flex-direction: column; gap: 8px; }
+.event { display: grid; grid-template-columns: 120px 1fr; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+.event img { width: 120px; height: 70px; object-fit: cover; border-radius: 6px; cursor: zoom-in; }
+
+.lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: flex; align-items: center; justify-content: center; z-index: 30; cursor: zoom-out; }
+.lightbox img { max-width: 96vw; max-height: 96vh; }
+
+@media (max-width: 760px) {
+  .topbar { height: auto; padding: 8px 12px; flex-wrap: wrap; gap: 8px; }
+  .topbar-title { display: none; }
+}
+@media (max-width: 1100px) {
+  .layout, body.role-manager .layout { grid-template-columns: 1fr; }
+  .role-options { grid-template-columns: 1fr; }
+  .panel.left { max-height: 360px; }
+  .panel.right { max-height: 620px; }
+  .panel.center { min-height: 560px; }
+  .fields { grid-template-columns: 1fr 1fr; }
+}
