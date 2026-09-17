@@ -1,6 +1,7 @@
 """Сквозная обработка снимка с весовой: анализ -> файлы -> машина -> рейс -> ответ в чат."""
 from __future__ import annotations
 
+import math
 import shutil
 import uuid
 from datetime import datetime
@@ -22,6 +23,22 @@ MIN_TURNAROUND_MIN = 3
 WEIGHT_MANUAL = "введён вручную"
 WEIGHT_GENERATED = "не измерен: придуман демо-генератором, весы не подключены"
 WEIGHT_EDITED = "введён вручную при исправлении"
+# Больше этого не весит даже автопоезд с прицепом: скорее всего перепутаны единицы.
+MAX_WEIGHT_T = 200.0
+
+# Откуда взято время события. Времена из разных источников сравнивать нельзя.
+TIME_FRAME = "кадр"
+TIME_SYSTEM = "система"
+
+
+def _minutes_between(earlier: str | None, later: str | None) -> float | None:
+    """Минуты между двумя отметками одного источника. None — если время не разобрать."""
+    try:
+        t1 = datetime.strptime(earlier, "%Y-%m-%d %H:%M:%S")
+        t2 = datetime.strptime(later, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    return (t2 - t1).total_seconds() / 60
 
 
 def now_iso() -> str:
@@ -173,6 +190,7 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
     main = _main_vehicle(report)
     frame_time = report.get("timestamp_on_frame")
     event_time = frame_time or created
+    time_source = TIME_FRAME if frame_time else TIME_SYSTEM
     time_note = "время с кадра камеры" if frame_time else "время кадра не прочитано, взято системное"
 
     if main is None:
@@ -294,9 +312,9 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
     manual_weight = None
     if guard.get("weight") not in (None, ""):
         try:
-            manual_weight = float(str(guard["weight"]).replace(",", "."))
-        except ValueError:
-            alerts.append(f"Вес «{guard['weight']}» не распознан как число, использован генератор")
+            manual_weight = _parse_weight(guard["weight"])
+        except ValueError as e:
+            alerts.append(f"{e} Пока подставлен вес из генератора.")
 
     weight_source = WEIGHT_MANUAL if manual_weight is not None else WEIGHT_GENERATED
 
@@ -306,9 +324,11 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
         event_kind = "exit"
         weight = manual_weight if manual_weight is not None else weights.generate(
             "exit", vehicle_id, main.get("manufacturer"), main.get("equipment_type"), load_state)
-        entry_w = open_trip.get("entry_weight") or 0.0
-        net = round(entry_w - weight, 2)
-        if weight >= entry_w:
+        entry_w = open_trip.get("entry_weight")
+        net = round(entry_w - weight, 2) if entry_w is not None else None
+        if entry_w is None:
+            alerts.append("Брутто на заезде неизвестно — нетто не посчитано")
+        elif weight >= entry_w:
             alerts.append(f"Выезд тяжелее заезда ({_fmt_t(weight)} ≥ {_fmt_t(entry_w)}) — груз не разгружен?")
         if load_state == "гружёный":
             alerts.append("На выезде кузов выглядит гружёным — разгрузка не подтверждена")
@@ -316,19 +336,26 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
             alerts.append("На заезде был прицеп, на выезде прицепа нет")
         if open_trip["warehouse_id"] != wh["id"]:
             alerts.append(f"Заезд был через {warehouses.get(open_trip['warehouse_id'])['name']}, выезд через {wh['name']}")
-        try:
-            t_in = datetime.strptime(open_trip["entry_time"], "%Y-%m-%d %H:%M:%S")
-            t_out = datetime.strptime(event_time, "%Y-%m-%d %H:%M:%S")
-            minutes = (t_out - t_in).total_seconds() / 60
-            if 0 <= minutes < MIN_TURNAROUND_MIN:
-                alerts.append(f"Слишком быстрый оборот: {minutes:.0f} мин между заездом и выездом")
-            if minutes < 0:
-                alerts.append("Время выезда на кадре раньше времени заезда — проверьте часы камеры")
-        except (TypeError, ValueError):
-            pass
+        # Времена из разных источников сравнивать нельзя: на части кадров надпись камеры
+        # показывает 2019 год, и смесь «заезд с кадра, выезд системный» давала тревогу
+        # почти на каждом выезде. Оба с кадров — считаем по ним, иначе по системным часам.
+        same_source = open_trip.get("entry_time_source") == time_source
+        both_from_frame = same_source and time_source == TIME_FRAME
+        if same_source:
+            minutes = _minutes_between(open_trip.get("entry_time"), event_time)
+        else:
+            # Одно время с надписи камеры, другое системное: разница между ними бессмысленна,
+            # поэтому оборот не проверяем вовсе, а не выдумываем тревогу.
+            minutes = None
+        if minutes is not None and 0 <= minutes < MIN_TURNAROUND_MIN:
+            alerts.append(f"Слишком быстрый оборот: {minutes:.0f} мин между заездом и выездом")
+        # Сбитые часы камеры видно, только если оба времени сняты с кадров.
+        if both_from_frame and minutes is not None and minutes < 0:
+            alerts.append("Время выезда на кадре раньше времени заезда — проверьте часы камеры")
         db.close_trip(open_trip["id"], {
             "exit_time": event_time, "exit_weight": weight, "exit_message_id": guard_msg_id,
             "exit_load_state": load_state, "exit_has_trailer": has_trailer, "net_weight": net,
+            "exit_time_source": time_source,
             "alerts": (open_trip.get("alerts") or []) + alerts, "exit_weight_source": weight_source,
             "driver": guard.get("driver") or None, "crop": guard.get("crop") or None,
         })
@@ -345,7 +372,7 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
             "vehicle_id": vehicle_id, "warehouse_id": wh["id"], "driver": guard.get("driver"),
             "crop": guard.get("crop"), "entry_time": event_time, "entry_weight": weight,
             "entry_message_id": guard_msg_id, "entry_load_state": load_state, "entry_has_trailer": has_trailer,
-            "alerts": alerts, "entry_weight_source": weight_source,
+            "alerts": alerts, "entry_weight_source": weight_source, "entry_time_source": time_source,
         })
         summary = (f"Заезд. Брутто {_fmt_t(weight)} ({weight_source}). "
                    f"Открыт рейс №{trip_id}; ждём выезда пустой машины.")
@@ -485,13 +512,18 @@ def undo_last_event() -> dict:
 
 
 def _parse_weight(raw) -> float:
+    """Вес из строки. float() принимает «nan» и «inf», а nan бесшумно ломает все сравнения."""
     try:
-        value = round(float(str(raw).replace(",", ".").replace(" ", "")), 2)
+        value = float(str(raw).replace(",", ".").replace(" ", ""))
     except ValueError:
         raise ValueError(f"Вес «{raw}» не похож на число. Напишите, например, 12.5")
+    if not math.isfinite(value):
+        raise ValueError(f"Вес «{raw}» — не число. Напишите, например, 12.5")
     if value <= 0:
         raise ValueError("Вес должен быть больше нуля.")
-    return value
+    if value > MAX_WEIGHT_T:
+        raise ValueError(f"Вес {value:.0f} т слишком велик — проверьте единицы, ожидаются тонны.")
+    return round(value, 2)
 
 
 def edit_last_event(changes: dict) -> dict:

@@ -108,6 +108,10 @@ MIGRATIONS = [
     # Откуда взялся вес: введён весовщицей или придуман генератором (весов в демо нет).
     ("trips", "entry_weight_source", "TEXT"),
     ("trips", "exit_weight_source", "TEXT"),
+    # Откуда взято время события: с надписи камеры или системное. Сравнивать между собой
+    # их нельзя — на части кадров часы камеры показывают 2019 год.
+    ("trips", "entry_time_source", "TEXT"),
+    ("trips", "exit_time_source", "TEXT"),
 ]
 
 
@@ -232,11 +236,12 @@ def create_trip(t: dict) -> int:
     with cursor() as cur:
         cur.execute(
             "INSERT INTO trips (vehicle_id, warehouse_id, driver, crop, entry_time, entry_weight, entry_message_id, "
-            "entry_load_state, entry_has_trailer, alerts, entry_weight_source) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "entry_load_state, entry_has_trailer, alerts, entry_weight_source, entry_time_source) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (t["vehicle_id"], t["warehouse_id"], t.get("driver"), t.get("crop"), t["entry_time"],
              t.get("entry_weight"), t.get("entry_message_id"), t.get("entry_load_state"),
              t.get("entry_has_trailer"), json.dumps(t.get("alerts", []), ensure_ascii=False),
-             t.get("entry_weight_source")),
+             t.get("entry_weight_source"), t.get("entry_time_source")),
         )
         return cur.lastrowid
 
@@ -245,11 +250,12 @@ def close_trip(trip_id: int, t: dict) -> None:
     with cursor() as cur:
         cur.execute(
             "UPDATE trips SET exit_time=?, exit_weight=?, exit_message_id=?, exit_load_state=?, exit_has_trailer=?, "
-            "net_weight=?, status='closed', alerts=?, exit_weight_source=?, driver=COALESCE(?, driver), "
-            "crop=COALESCE(?, crop) WHERE id=?",
+            "net_weight=?, status='closed', alerts=?, exit_weight_source=?, exit_time_source=?, "
+            "driver=COALESCE(?, driver), crop=COALESCE(?, crop) WHERE id=?",
             (t["exit_time"], t.get("exit_weight"), t.get("exit_message_id"), t.get("exit_load_state"),
              t.get("exit_has_trailer"), t.get("net_weight"), json.dumps(t.get("alerts", []), ensure_ascii=False),
-             t.get("exit_weight_source"), t.get("driver"), t.get("crop"), trip_id),
+             t.get("exit_weight_source"), t.get("exit_time_source"),
+             t.get("driver"), t.get("crop"), trip_id),
         )
 
 
