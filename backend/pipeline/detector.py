@@ -1,6 +1,7 @@
 """Детекция техники и людей на кадре (YOLOv8, классы COCO)."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import numpy as np
@@ -23,13 +24,58 @@ class Detection:
 
 
 _model = None
+_device: str | None = None
+
+
+def resolve_device(name: str | None = None) -> str:
+    """Куда класть модель: "auto" — видеокарта, если она есть, иначе процессор."""
+    name = (name or os.environ.get("YOLO_DEVICE") or "auto").strip().lower()
+    if name != "auto":
+        return name
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+        if torch.backends.mps.is_available():  # Apple GPU
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def get_device() -> str:
+    global _device
+    if _device is None:
+        _device = resolve_device()
+    return _device
+
+
+def set_device(name: str | None) -> str:
+    """Задать устройство до первого кадра (из run_batch.py)."""
+    global _device, _model
+    new = resolve_device(name)
+    if new != _device:
+        _device, _model = new, None  # модель уже лежит на прежнем устройстве
+    return _device
+
+
+def _fallback_to_cpu(err: Exception) -> None:
+    global _device, _model
+    print(f"Видеокарта ({_device}) недоступна ({type(err).__name__}: {err}) — считаем на процессоре")
+    _device, _model = "cpu", None
 
 
 def get_model():
     global _model
     if _model is None:
         from ultralytics import YOLO
-        _model = YOLO(config.YOLO_MODEL)
+        model = YOLO(config.YOLO_MODEL)
+        try:
+            model.to(get_device())
+        except Exception as e:
+            _fallback_to_cpu(e)
+            model.to("cpu")
+        _model = model
     return _model
 
 
@@ -73,7 +119,14 @@ def merge_vehicles(dets: list[Detection]) -> list[Detection]:
 
 def detect(img_bgr: np.ndarray, conf: float = 0.25) -> list[Detection]:
     model = get_model()
-    res = model.predict(img_bgr, imgsz=config.YOLO_IMGSZ, conf=conf, verbose=False)[0]
+    try:
+        res = model.predict(img_bgr, imgsz=config.YOLO_IMGSZ, conf=conf, device=get_device(), verbose=False)[0]
+    except Exception as e:
+        if get_device() == "cpu":
+            raise
+        # Видеокарта отвалилась на середине прогона — доканчиваем на процессоре, а не падаем.
+        _fallback_to_cpu(e)
+        res = get_model().predict(img_bgr, imgsz=config.YOLO_IMGSZ, conf=conf, device="cpu", verbose=False)[0]
     names = res.names
     dets: list[Detection] = []
     for box in res.boxes:

@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import textwrap
+from collections.abc import Iterable
 from pathlib import Path
 
 CSV_FIELDS = [
@@ -45,19 +48,47 @@ def detection_rows(report: dict) -> list[dict]:
     return rows
 
 
+def _tmp_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.{os.getpid()}.tmp")
+
+
 def write_json(report: dict, path: str | Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Пишем через временный файл: обрыв на середине не оставит обрезанный отчёт,
+    # иначе пакетный прогон примет его за посчитанный кадр и не пересчитает.
+    tmp = _tmp_path(path)
+    tmp.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
     return path
 
 
-def write_csv(reports: list[dict], path: str | Path) -> Path:
+def write_json_stream(reports: Iterable[dict], path: str | Path) -> Path:
+    """{"images": [...]} по одному отчёту — память не зависит от числа кадров."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8-sig") as f:
+    tmp = _tmp_path(path)
+    with tmp.open("w", encoding="utf-8") as f:
+        f.write('{\n  "images": [\n')
+        first = True
+        for report in reports:
+            if not first:
+                f.write(",\n")
+            first = False
+            f.write(textwrap.indent(json.dumps(report, ensure_ascii=False, indent=2), "    "))
+        f.write("\n  ]\n}\n")
+    os.replace(tmp, path)
+    return path
+
+
+def write_csv(reports: Iterable[dict], path: str | Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _tmp_path(path)
+    with tmp.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
         for r in reports:
             writer.writerows(detection_rows(r))
+    os.replace(tmp, path)
     return path
