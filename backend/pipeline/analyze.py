@@ -21,9 +21,29 @@ MAIN_AREA_FRACTION = 0.004
 # Остальная техника считается "на площадке", если сопоставима по размеру с главной.
 SECONDARY_AREA_RATIO = 0.4
 
+# Надёжность прочтения номера: согласие разных прочтений + уверенность OCR - штрафы.
+# Веса и пороги подобраны перебором по эталонной разметке 25 кадров весовой, а не на глаз.
+PLATE_W_VOTES = 0.5
+PLATE_W_CONF = 0.5
+# Несуществующий код региона — почти всегда ошибка чтения, а не редкий номер.
+PLATE_BAD_REGION_PENALTY = 0.8
+# Каждый символ, исправленный при подгонке под шаблон, удешевляет прочтение.
+PLATE_FIX_PENALTY = 0.2
+# Ниже порога честнее сказать «номер не прочитан», чем показать выдуманный.
+PLATE_READABLE_MIN = 0.55
+PLATE_SURE_MIN = 0.75
+
+
+def plate_reliability(p) -> float:
+    return (PLATE_W_VOTES * p.votes + PLATE_W_CONF * p.confidence
+            - (0.0 if p.region_valid else PLATE_BAD_REGION_PENALTY)
+            - PLATE_FIX_PENALTY * p.fixes)
+
 
 def _fmt_conf(value: float) -> str:
-    return "высокая" if value >= 0.7 else "средняя" if value >= 0.4 else "низкая"
+    """Словесная оценка. Границы совпадают с порогом читаемости: показанный номер не бывает «низкой» уверенности."""
+    return ("высокая" if value >= PLATE_SURE_MIN else
+            "средняя" if value >= PLATE_READABLE_MIN else "низкая")
 
 
 def set_country(entry: dict) -> None:
@@ -110,24 +130,29 @@ def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bo
 
             if found:
                 best = found[0]
-                # Уверенность = согласие разных прочтений + уверенность OCR + валидный регион.
-                reliability = 0.5 * best.votes + 0.5 * best.confidence - (0.3 if not best.region_valid else 0)
+                reliability = plate_reliability(best)
+                readable = reliability >= PLATE_READABLE_MIN
                 entry["license_plate"] = {
-                    "text": best.text,
-                    "formatted": best.formatted,
+                    # Ненадёжное прочтение не выдаём за номер: выдуманный номер хуже пустого поля.
+                    "text": best.text if readable else None,
+                    "formatted": best.formatted if readable else None,
                     "country": "Казахстан (KZ)",
-                    "region_code": best.region_code,
+                    "region_code": best.region_code if readable else None,
                     "format": best.kind,
-                    "readable": reliability >= 0.3,
+                    "readable": readable,
                     "confidence": _fmt_conf(reliability),
                     "ocr_confidence": round(best.confidence, 3),
                     "agreement": round(best.votes, 2),
-                    "alternatives": [p.formatted for p in found[1:4]],
+                    "alternatives": [p.formatted for p in found[1:4]] if readable else [],
                 }
-                if reliability < 0.3:
-                    entry["license_plate"]["notes"] = "Номер мелкий/нечёткий: прочтение предположительное, требует подтверждения охранником"
-                # Рамка рисуется только для лучшего прочтения; остальные варианты — в alternatives.
-                for p in found[:1]:
+                if not readable:
+                    entry["license_plate"]["notes"] = ("Номер мелкий/нечёткий: прочтение ненадёжное, "
+                                                       "номер должен ввести охранник")
+                    # Догадку OCR прячем в отдельное поле — как подсказку, а не как результат.
+                    entry["license_plate"]["ocr_guess"] = {"text": best.text, "formatted": best.formatted,
+                                                           "reliability": round(reliability, 2)}
+                # Рамка рисуется только для надёжного прочтения; остальные варианты — в alternatives.
+                for p in found[:1] if readable else []:
                     plate_entries.append({
                         "id": None,
                         "category": "license_plate",
@@ -139,7 +164,7 @@ def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bo
                                           "region_code": p.region_code, "format": p.kind},
                         "bounding_box_px": {"x1": p.bbox[0], "y1": p.bbox[1], "x2": p.bbox[2], "y2": p.bbox[3]},
                         "detection_confidence": round(p.confidence, 3),
-                        "readable": reliability >= 0.3,
+                        "readable": True,
                         "vehicle_id": vehicle_id,
                     })
             else:
@@ -240,8 +265,10 @@ def label_for(det: dict) -> str:
             parts.append("(фон)")
         return " ".join(parts)
     if cat == "license_plate":
-        mark = "" if det.get("readable", True) else " (?)"
-        return f"{det['id']}: номер {det['license_plate']['formatted']}{mark}"
+        formatted = (det.get("license_plate") or {}).get("formatted")
+        if not formatted:
+            return f"{det['id']}: номер не прочитан"
+        return f"{det['id']}: номер {formatted}"
     if cat == "person":
         return f"{det['id']}: человек"
     return f"{det['id']}: {det.get('equipment_type', cat)}"
