@@ -332,6 +332,23 @@ def list_messages(limit: int = 200) -> list[dict]:
     return [_row(r) for r in reversed(rows)]
 
 
+def guard_frames() -> list[str]:
+    """Кадры, уже отправленные весовщицей. Отдельный запрос, а не обрезанная лента чата:
+    после тысячи сообщений очередь кадров начинала выдавать уже обработанные."""
+    with cursor() as cur:
+        rows = cur.execute("SELECT payload FROM messages WHERE role='guard' AND payload IS NOT NULL").fetchall()
+    frames = []
+    for r in rows:
+        try:
+            p = json.loads(r["payload"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        # Отменённый заезд возвращает кадр в очередь: весовщица переснимет ту же машину.
+        if isinstance(p, dict) and p.get("frame") and not p.get("undone"):
+            frames.append(p["frame"])
+    return frames
+
+
 def get_message(message_id: int) -> dict | None:
     with cursor() as cur:
         return _row(cur.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone())

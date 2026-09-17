@@ -97,10 +97,15 @@ def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bo
     main_area = vehicles[0].area if vehicles else 0
 
     for idx, v in enumerate(vehicles):
+        # Разбираем (номер, марка, модель) и крупнейшую машину, и сопоставимую с ней:
+        # на кадре может стоять автопоезд, разбитый детектором на две рамки.
         if idx == 0:
-            is_main = v.area >= MAIN_AREA_FRACTION * w * h
+            analyzed = v.area >= MAIN_AREA_FRACTION * w * h
         else:
-            is_main = v.area >= max(SECONDARY_AREA_RATIO * main_area, 0.01 * w * h)
+            analyzed = v.area >= max(SECONDARY_AREA_RATIO * main_area, 0.01 * w * h)
+        # Но НА ВЕСАХ стоит ровно одна машина — самая крупная. Раньше «на весах»
+        # оказывались сразу несколько, и прицеп попадал в отчёт отдельной машиной.
+        is_main = analyzed and idx == 0
         vehicle_id = next_id
         next_id += 1
 
@@ -108,6 +113,8 @@ def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bo
             "id": vehicle_id,
             "category": "vehicle",
             "on_scale": is_main,
+            # Разобрана наравне с машиной на весах, но стоит рядом, а не на платформе.
+            "on_site": analyzed and not is_main,
             "yolo_class": v.cls,
             "equipment_type": TYPE_BY_CLASS.get(v.cls, "Техника"),
             "manufacturer": None,
@@ -122,7 +129,7 @@ def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bo
         }
 
         plate_entries: list[dict] = []
-        if is_main:
+        if analyzed:
             # OCR по увеличенной вырезке техники: номер + надписи (марка).
             x1, y1, x2, y2 = v.bbox
             crop = img[y1:y2, x1:x2]
@@ -217,6 +224,8 @@ def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bo
             set_country(entry)
         else:
             entry["notes"] = "Техника на заднем плане, вне весовой платформы."
+        if entry.get("on_site"):
+            entry["notes"] = (entry.get("notes") or "") + "Стоит рядом с платформой, не на весах. "
 
         detections.append(entry)
         for p in plate_entries:

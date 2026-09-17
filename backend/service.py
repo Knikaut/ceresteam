@@ -21,6 +21,9 @@ APPEARANCE_MATCH = 0.85
 APPEARANCE_MARGIN = 0.05
 # Быстрый оборот подозрителен: за это время разгрузиться нельзя.
 MIN_TURNAROUND_MIN = 3
+# Рейс, висящий дольше смены, почти всегда означает пропущенный выезд или то,
+# что машину при следующем приезде не узнали и завели заново.
+MAX_OPEN_HOURS = 12
 
 # Откуда взялся вес. Реальных весов в демо нет, и выдавать генератор за показания нельзя.
 WEIGHT_MANUAL = "введён вручную"
@@ -63,13 +66,7 @@ def list_frames() -> list[str]:
 
 
 def used_frames() -> list[str]:
-    used = []
-    for m in db.list_messages(limit=1000):
-        p = m.get("payload") or {}
-        # Отменённый заезд возвращает кадр в очередь: весовщица переснимет ту же машину.
-        if m["role"] == "guard" and p.get("frame") and not p.get("undone"):
-            used.append(p["frame"])
-    return used
+    return db.guard_frames()
 
 
 def capture_frame(frame: str | None = None) -> dict:
@@ -323,6 +320,11 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
     elif recognized_by_appearance:
         alerts.append(f"Номер не прочитан; машина сопоставлена по внешности с профилем "
                       f"№{recognized_by_appearance['vehicle_id']} — подтвердите номер")
+    заданный_склад = guard.get("warehouse_id")
+    if not заданный_склад:
+        alerts.append(f"Склад не выбран — записан {wh['name']}")
+    elif заданный_склад not in warehouses.BY_ID:
+        alerts.append(f"Склад «{заданный_склад}» неизвестен — записан {wh['name']}")
     load_state = appearance.get("load_state")
     has_trailer = appearance.get("has_trailer")
     manual_weight = None
@@ -365,6 +367,8 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
             minutes = None
         if minutes is not None and 0 <= minutes < MIN_TURNAROUND_MIN:
             alerts.append(f"Слишком быстрый оборот: {minutes:.0f} мин между заездом и выездом")
+        if minutes is not None and minutes > MAX_OPEN_HOURS * 60:
+            alerts.append(f"Рейс был открыт {minutes / 60:.0f} ч — проверьте, не пропущен ли выезд")
         # Сбитые часы камеры видно, только если оба времени сняты с кадров.
         if both_from_frame and minutes is not None and minutes < 0:
             alerts.append("Время выезда на кадре раньше времени заезда — проверьте часы камеры")
