@@ -485,33 +485,9 @@ def _from_kz_result(res, box, offset) -> PlateResult | None:
     )
 
 
-def read_vehicle_fast(crop_bgr: np.ndarray, offset=(0, 0)) -> list[PlateResult]:
-    """Номера на вырезке техники специализированным распознавателем."""
-    reader = fast_reader()
-    if reader is None:
-        return []
+def candidate_rects(crop_bgr: np.ndarray, boxes: list[OcrBox], scale: float) -> list[list[int]]:
+    """Области, похожие на табличку: блоки с цифрами, строки текста, светлые прямоугольники."""
     h, w = crop_bgr.shape[:2]
-    found = []
-    for p in reader.detect(crop_bgr, (0, 0, w, h)):
-        res = reader.read(crop_bgr, p.box)
-        adapted = _from_kz_result(res, p.box, offset)
-        if adapted:
-            found.append(adapted)
-    return sorted(found, key=lambda r: -r.confidence)
-
-
-def read_vehicle(crop_bgr: np.ndarray, offset=(0, 0)) -> tuple[list[PlateResult], list[OcrBox]]:
-    """Возвращает (номера, все OCR-блоки первого прохода) для вырезки техники."""
-    if use_fast_reader():
-        # Номера читает специализированная модель, EasyOCR остаётся ради надписей на кабине
-        # (марка техники) — это один проход вместо прежних 14-26.
-        up, scale = upscale_for_ocr(crop_bgr, target_width=1300)
-        return read_vehicle_fast(crop_bgr, offset), ocr_image(up)
-    h, w = crop_bgr.shape[:2]
-    up, scale = upscale_for_ocr(crop_bgr, target_width=1300)
-    boxes = ocr_image(up)
-
-    # Кандидаты (по приоритету): блоки с цифрами -> светлые прямоугольники -> прочий текст.
     ranked: list[tuple[int, list[int]]] = []
     for b in boxes:
         txt = normalize(b.text)
@@ -527,7 +503,83 @@ def read_vehicle(crop_bgr: np.ndarray, offset=(0, 0)) -> tuple[list[PlateResult]
     for r in _white_rectangles(crop_bgr):
         ranked.append((1, r))
     ranked.sort(key=lambda t: t[0])
-    rects = _dedupe([_expand(r, w, h) for _, r in ranked])[:4]
+    return _dedupe([_expand(r, w, h) for _, r in ranked])[:4]
+
+
+def read_rects_fast(crop_bgr: np.ndarray, rects: list[list[int]], offset=(0, 0)) -> list[PlateResult]:
+    """Читает готовые области специализированным распознавателем.
+
+    Нужно там, где детектор номера табличку не находит: он обучен на обычных вытянутых
+    номерах и пропускает квадратные прицепные и синие тракторные. Проверено на кадре 4:
+    по точной рамке номер «98 AAH 10» читается с уверенностью 0.83, а детектор её не даёт.
+    """
+    reader = fast_reader()
+    if reader is None:
+        return []
+    found = []
+    for r in rects:
+        res = reader.read(crop_bgr, tuple(r))
+        adapted = _from_kz_result(res, r, offset)
+        if adapted:
+            found.append(adapted)
+    return found
+
+
+# Детектор номера обучен на обычных вытянутых табличках и на двухстрочном номере находит
+# только верхнюю строку. Поэтому каждую рамку дочитываем ещё и достроенной вниз.
+# Замер на кадре 4 (квадратный прицепной номер): как нашёл детектор — «H 088 AAH» (0.04),
+# достроенная на 70% высоты — «98 AAH 10» (0.83).
+BOX_GROWTH = (0.0, 0.7, 1.0)
+
+
+def _box_variants(box: tuple[int, int, int, int], w: int, h: int) -> list[tuple[int, int, int, int]]:
+    x1, y1, x2, y2 = box
+    высота = y2 - y1
+    варианты = []
+    for доля in BOX_GROWTH:
+        низ = min(h, y2 + int(высота * доля))
+        вариант = (max(0, x1), max(0, y1), min(w, x2), низ)
+        if вариант[3] > вариант[1] and вариант not in варианты:
+            варианты.append(вариант)
+    return варианты
+
+
+def read_vehicle_fast(crop_bgr: np.ndarray, offset=(0, 0)) -> list[PlateResult]:
+    """Номера на вырезке техники специализированным распознавателем."""
+    reader = fast_reader()
+    if reader is None:
+        return []
+    h, w = crop_bgr.shape[:2]
+    found = []
+    for p in reader.detect(crop_bgr, (0, 0, w, h)):
+        лучшее = None
+        for вариант in _box_variants(p.box, w, h):
+            res = reader.read(crop_bgr, вариант)
+            adapted = _from_kz_result(res, вариант, offset)
+            if adapted and (лучшее is None or adapted.confidence > лучшее.confidence):
+                лучшее = adapted
+        if лучшее:
+            found.append(лучшее)
+    return sorted(found, key=lambda r: -r.confidence)
+
+
+def read_vehicle(crop_bgr: np.ndarray, offset=(0, 0)) -> tuple[list[PlateResult], list[OcrBox]]:
+    """Возвращает (номера, все OCR-блоки первого прохода) для вырезки техники."""
+    if use_fast_reader():
+        # Номера читает специализированная модель, EasyOCR остаётся ради надписей на кабине
+        # (марка техники) — это один проход вместо прежних 14-26.
+        up, scale = upscale_for_ocr(crop_bgr, target_width=1300)
+        boxes = ocr_image(up)
+        found = read_vehicle_fast(crop_bgr, offset)
+        if not found:
+            # Детектор номера табличку не нашёл — пробуем области, найденные по тексту
+            # и светлым прямоугольникам: так читаются квадратные прицепные номера.
+            found = read_rects_fast(crop_bgr, candidate_rects(crop_bgr, boxes, scale), offset)
+        return sorted(found, key=lambda r: -r.confidence), boxes
+    h, w = crop_bgr.shape[:2]
+    up, scale = upscale_for_ocr(crop_bgr, target_width=1300)
+    boxes = ocr_image(up)
+    rects = candidate_rects(crop_bgr, boxes, scale)
 
     results: dict[str, PlateResult] = {}
     # Первый проход тоже может дать номер (крупные надписи на борту).
