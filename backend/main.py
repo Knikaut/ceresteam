@@ -45,6 +45,14 @@ class ReportRequest(BaseModel):
     frame: str | None = None
 
 
+class EventEditRequest(BaseModel):
+    """Что весовщица может поправить у последнего события."""
+    plate: str | None = None
+    driver: str | None = None
+    crop: str | None = None
+    weight: str | float | None = None
+
+
 @app.get("/api/state")
 def get_state():
     return service.state()
@@ -101,12 +109,45 @@ async def create_report(req: ReportRequest):
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
         except Exception as e:
-            raise HTTPException(500, f"Ошибка обработки: {e}")
+            # Текст уходит прямо на экран весовщице, поэтому без второго «Ошибка обработки:» сверху.
+            raise HTTPException(500, f"Снимок не удалось обработать: {e}")
+
+
+@app.get("/api/events/last")
+def last_event():
+    return service.last_event() or {}
+
+
+@app.post("/api/events/last/undo")
+async def undo_last_event():
+    # Под общим замком: отмена не должна попасть в середину обработки снимка.
+    async with _lock:
+        try:
+            return await asyncio.to_thread(service.undo_last_event)
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+        except Exception as e:
+            raise HTTPException(500, f"Отменить не получилось: {e}")
+
+
+@app.patch("/api/events/last")
+async def edit_last_event(req: EventEditRequest):
+    async with _lock:
+        try:
+            return await asyncio.to_thread(service.edit_last_event, req.model_dump())
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(500, f"Исправление не сохранилось: {e}")
 
 
 @app.post("/api/reset")
-def reset():
-    db.reset()
+async def reset():
+    # Тот же замок, что и у обработки: иначе сброс сносит данные посреди анализа снимка.
+    async with _lock:
+        await asyncio.to_thread(db.reset)
     return {"ok": True}
 
 

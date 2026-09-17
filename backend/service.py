@@ -18,6 +18,11 @@ APPEARANCE_MATCH = 0.85
 # Быстрый оборот подозрителен: за это время разгрузиться нельзя.
 MIN_TURNAROUND_MIN = 3
 
+# Откуда взялся вес. Реальных весов в демо нет, и выдавать генератор за показания нельзя.
+WEIGHT_MANUAL = "введён вручную"
+WEIGHT_GENERATED = "не измерен: придуман демо-генератором, весы не подключены"
+WEIGHT_EDITED = "введён вручную при исправлении"
+
 
 def now_iso() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -40,8 +45,10 @@ def list_frames() -> list[str]:
 def used_frames() -> list[str]:
     used = []
     for m in db.list_messages(limit=1000):
-        if m["role"] == "guard" and (m.get("payload") or {}).get("frame"):
-            used.append(m["payload"]["frame"])
+        p = m.get("payload") or {}
+        # Отменённый заезд возвращает кадр в очередь: весовщица переснимет ту же машину.
+        if m["role"] == "guard" and p.get("frame") and not p.get("undone"):
+            used.append(p["frame"])
     return used
 
 
@@ -104,6 +111,12 @@ def process_capture(capture_id: str, guard: dict) -> dict:
     wh = warehouses.get(guard.get("warehouse_id"))
     created = now_iso()
 
+    # Повторная отправка того же снимка (оборвалась связь, нажали дважды) не должна открывать второй рейс.
+    prev = db.event_for_capture(capture_id)
+    if prev and prev["status"] == "active":
+        return {"guard_message": db.get_message(prev["guard_message_id"]),
+                "ai_message": db.get_message(prev["ai_message_id"]), "duplicate": True}
+
     guard_text = ", ".join(x for x in [
         f"водитель: {guard['driver']}" if guard.get("driver") else "",
         f"культура: {guard['crop']}" if guard.get("crop") else "",
@@ -111,23 +124,32 @@ def process_capture(capture_id: str, guard: dict) -> dict:
         f"номер: {guard['plate_override']}" if guard.get("plate_override") else "",
         guard.get("note") or "",
     ] if x) or "Машина на весах."
-    guard_msg_id = db.add_message({
-        "created_at": created, "role": "guard", "text": guard_text, "image": url_for(image),
-        "payload": {**guard, "capture_id": capture_id}, "warehouse_id": wh["id"],
-    })
+    if prev:
+        # Прошлая попытка сорвалась на анализе: дописываем то же сообщение, а не плодим второе.
+        guard_msg_id, event_id = prev["guard_message_id"], prev["id"]
+        db.update_message(guard_msg_id, text=guard_text, payload={**guard, "capture_id": capture_id})
+    else:
+        guard_msg_id = db.add_message({
+            "created_at": created, "role": "guard", "text": guard_text, "image": url_for(image),
+            "payload": {**guard, "capture_id": capture_id}, "warehouse_id": wh["id"],
+        })
+        event_id = db.create_event({"created_at": created, "capture_id": capture_id,
+                                    "guard_message_id": guard_msg_id, "status": "pending"})
 
     try:
-        return _analyze_and_reply(capture_id, guard, image, wh, created, guard_msg_id)
+        return _analyze_and_reply(capture_id, guard, image, wh, created, guard_msg_id, event_id)
     except Exception as e:
         # Сообщение охранника уже в чате — отвечаем об ошибке, чтобы оно не осталось без ответа.
         db.add_message({
-            "created_at": now_iso(), "role": "ai", "text": f"Ошибка обработки снимка: {e}. Снимок можно отправить повторно.",
+            "created_at": now_iso(), "role": "ai",
+            "text": f"Не удалось разобрать снимок: {e}. Снимок остался прикреплён — отправьте его ещё раз.",
             "payload": {"alerts": [], "error": str(e)}, "warehouse_id": wh["id"], "event_kind": "none",
         })
         raise
 
 
-def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, created: str, guard_msg_id: int) -> dict:
+def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, created: str,
+                       guard_msg_id: int, event_id: int) -> dict:
     # 1. Анализ кадра. Реестр здесь не вызываем: номер может исправить охранник, ищем один раз ниже.
     report = analyze.analyze_image(image, use_vlm=True, use_registry=False)
     out_dir = REPORTS_DIR / capture_id
@@ -138,10 +160,13 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
     report["capture_file"] = image.name
     files: dict[str, str] = {}
 
-    def write_files() -> None:
-        """Кадр с рамками, JSON и CSV пишем после всех уточнений (правка номера, реестр),
-        чтобы подписи на картинке и файлы совпадали с ответом в чате."""
+    def write_images() -> None:
+        """Кадр с рамками пишем после всех уточнений (правка номера, реестр),
+        чтобы подписи на картинке совпадали с ответом в чате."""
         files.update({k: url_for(v) for k, v in analyze.render_outputs(image, report, out_dir).items()})
+
+    def write_data() -> None:
+        """JSON и CSV — последними: в них должен попасть и вес с пометкой, откуда он взялся."""
         files["json"] = url_for(export.write_json(report, out_dir / "detections.json"))
         files["csv"] = url_for(export.write_csv([report], out_dir / "detections.csv"))
 
@@ -151,12 +176,14 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
     time_note = "время с кадра камеры" if frame_time else "время кадра не прочитано, взято системное"
 
     if main is None:
-        write_files()
+        write_images()
+        write_data()
         text = ("На снимке не найдена техника на весовой платформе. "
                 f"Найдено объектов: {report['summary']['total_objects_detected']}. Рейс не создан.")
         ai_id = db.add_message({"created_at": now_iso(), "role": "ai", "text": text, "image": files.get("annotated"),
                                 "files": files, "payload": {"report_summary": report["summary"], "alerts": []},
                                 "warehouse_id": wh["id"], "event_kind": "none"})
+        db.update_event(event_id, kind="none", ai_message_id=ai_id, status="active", snapshot={})
         return {"guard_message": db.get_message(guard_msg_id), "ai_message": db.get_message(ai_id)}
 
     # 2. Номер: правка охранника важнее прочтения OCR.
@@ -234,13 +261,16 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
         registry_status, registry_record = registry.lookup_status(plate_compact)
         main["registry_status"] = registry_status
         analyze.apply_registry(main, registry_record)
-    write_files()
+    write_images()
 
     # Бортовой номер: у известной машины (по номеру или по внешности) свой, новой — следующий по порядку.
     existing = cand if (recognized_by_appearance and cand) else (
         db.get_vehicle_by_plate(plate_compact) or plateless_match)
     vehicle_id = existing["id"] if existing else db.next_board_no()
     temporary = not plate_compact
+
+    # Снимок профиля ДО записи: если событие придётся отменить, машина вернётся к нему.
+    vehicle_before = db.raw_vehicle(vehicle_id)
 
     db.upsert_vehicle({
         "id": vehicle_id, "plate": plate_compact, "plate_formatted": plate_formatted,
@@ -268,7 +298,10 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
         except ValueError:
             alerts.append(f"Вес «{guard['weight']}» не распознан как число, использован генератор")
 
+    weight_source = WEIGHT_MANUAL if manual_weight is not None else WEIGHT_GENERATED
+
     open_trip = db.open_trip_for(vehicle_id)
+    trip_before = db.raw_trip(open_trip["id"]) if open_trip else None
     if open_trip:
         event_kind = "exit"
         weight = manual_weight if manual_weight is not None else weights.generate(
@@ -296,11 +329,11 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
         db.close_trip(open_trip["id"], {
             "exit_time": event_time, "exit_weight": weight, "exit_message_id": guard_msg_id,
             "exit_load_state": load_state, "exit_has_trailer": has_trailer, "net_weight": net,
-            "alerts": (open_trip.get("alerts") or []) + alerts,
+            "alerts": (open_trip.get("alerts") or []) + alerts, "exit_weight_source": weight_source,
             "driver": guard.get("driver") or None, "crop": guard.get("crop") or None,
         })
         trip_id = open_trip["id"]
-        summary = (f"Выезд. Тара {_fmt_t(weight)}, брутто на заезде {_fmt_t(entry_w)}, "
+        summary = (f"Выезд. Тара {_fmt_t(weight)} ({weight_source}), брутто на заезде {_fmt_t(entry_w)}, "
                    f"нетто {_fmt_t(net)}. Рейс №{trip_id} закрыт.")
     else:
         event_kind = "entry"
@@ -312,9 +345,17 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
             "vehicle_id": vehicle_id, "warehouse_id": wh["id"], "driver": guard.get("driver"),
             "crop": guard.get("crop"), "entry_time": event_time, "entry_weight": weight,
             "entry_message_id": guard_msg_id, "entry_load_state": load_state, "entry_has_trailer": has_trailer,
-            "alerts": alerts,
+            "alerts": alerts, "entry_weight_source": weight_source,
         })
-        summary = f"Заезд. Брутто {_fmt_t(weight)}. Открыт рейс №{trip_id}; ждём выезда пустой машины."
+        summary = (f"Заезд. Брутто {_fmt_t(weight)} ({weight_source}). "
+                   f"Открыт рейс №{trip_id}; ждём выезда пустой машины.")
+
+    # Вес попадает и в выгрузку: в JSON отдельным блоком, в CSV — примечанием к машине.
+    report["weighing"] = {"event": event_kind, "trip_id": trip_id, "vehicle_id": vehicle_id,
+                          "weight_t": weight, "weight_source": weight_source,
+                          "measured": manual_weight is not None}
+    main["notes"] = (main.get("notes") or "") + f"Вес {weight:.2f} т — {weight_source}. "
+    write_data()
 
     vehicle = db.get_vehicle(vehicle_id)
     trip = db.get_trip(trip_id)
@@ -358,6 +399,7 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
 
     payload = {
         "vehicle": vehicle, "trip": trip, "event_kind": event_kind, "weight": weight, "alerts": alerts,
+        "weight_source": weight_source, "weight_measured": manual_weight is not None,
         "plate": {"formatted": plate_formatted, "source": plate_source, "ocr": plate_info},
         "registry": {"status": registry_status, "record": registry_record},
         "recognized_by_appearance": recognized_by_appearance,
@@ -370,7 +412,159 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
         "trip_id": trip_id, "event_kind": event_kind,
     })
     db.update_message(guard_msg_id, vehicle_id=vehicle_id, trip_id=trip_id, event_kind=event_kind)
-    return {"guard_message": db.get_message(guard_msg_id), "ai_message": db.get_message(ai_id)}
+    db.update_event(event_id, kind=event_kind, vehicle_id=vehicle_id, trip_id=trip_id, ai_message_id=ai_id,
+                    status="active", snapshot={"vehicle": vehicle_before, "trip": trip_before})
+    return {"guard_message": db.get_message(guard_msg_id), "ai_message": db.get_message(ai_id),
+            "event_id": event_id}
+
+
+# ---------- исправление ошибки весовщицы ----------
+
+def _kind_ru(kind: str) -> str:
+    return "заезд" if kind == "entry" else "выезд"
+
+
+def last_event() -> dict | None:
+    """Последнее оформленное событие с данными для формы правки."""
+    ev = db.last_active_event()
+    if not ev:
+        return None
+    trip = db.get_trip(ev["trip_id"]) if ev.get("trip_id") else None
+    vehicle = db.get_vehicle(ev["vehicle_id"]) if ev.get("vehicle_id") else None
+    weight = (trip or {}).get("entry_weight" if ev["kind"] == "entry" else "exit_weight")
+    source = (trip or {}).get("entry_weight_source" if ev["kind"] == "entry" else "exit_weight_source")
+    return {"event": ev, "trip": trip, "vehicle": vehicle, "kind_ru": _kind_ru(ev["kind"]),
+            "weight": weight, "weight_source": source, "ai_message_id": ev.get("ai_message_id")}
+
+
+def _mark_message(message_id: int | None, extra: dict) -> None:
+    """Помечаем сообщение в чате, но не стираем: в базе должно остаться, что событие было."""
+    if not message_id:
+        return
+    m = db.get_message(message_id)
+    if m:
+        db.update_message(message_id, payload={**(m.get("payload") or {}), **extra})
+
+
+def undo_last_event() -> dict:
+    """Откат последнего заезда/выезда: рейс и профиль машины возвращаются в прежнее состояние."""
+    ev = db.last_active_event()
+    if not ev:
+        raise LookupError("Отменять нечего: ни одного заезда или выезда ещё не оформлено.")
+    trip = db.get_trip(ev["trip_id"]) if ev.get("trip_id") else None
+    vehicle = db.get_vehicle(ev["vehicle_id"]) if ev.get("vehicle_id") else None
+    label = (vehicle or {}).get("label") or f"№{ev.get('vehicle_id')}"
+    snapshot = ev.get("snapshot") or {}
+    vehicle_removed = ev.get("vehicle_id") is not None and not snapshot.get("vehicle")
+
+    db.restore_state(snapshot, ev.get("vehicle_id"), ev.get("trip_id"))
+    at = now_iso()
+    db.mark_event_undone(ev["id"], at)
+    _mark_message(ev.get("guard_message_id"), {"undone": True, "undone_at": at})
+    _mark_message(ev.get("ai_message_id"), {"undone": True, "undone_at": at})
+
+    if ev["kind"] == "entry":
+        lines = [f"Заезд отменён. Рейс №{ev['trip_id']} удалён, машина {label} больше не числится на территории."]
+        if vehicle_removed:
+            lines.append(f"Профиль {label} завёлся этим заездом — он тоже убран.")
+    else:
+        entry_w = (snapshot.get("trip") or {}).get("entry_weight")
+        lines = [f"Выезд отменён. Рейс №{ev['trip_id']} снова открыт: брутто на заезде {_fmt_t(entry_w)}, "
+                 f"машина {label} снова на территории."]
+    lines.append(f"Оформлено было {ev['created_at']}, отменено {at}. Запись об отмене осталась в базе. "
+                 f"Снимок можно отправить заново.")
+    ai_id = db.add_message({
+        "created_at": at, "role": "ai", "text": "\n".join(lines),
+        "payload": {"undo_of": ev["id"], "event_kind": "undo", "kind_undone": ev["kind"],
+                    "trip_id": ev.get("trip_id"), "alerts": []},
+        "vehicle_id": ev.get("vehicle_id"), "warehouse_id": (trip or {}).get("warehouse_id"),
+        "event_kind": "undo",
+    })
+    return {"ok": True, "undone": ev["kind"], "trip_id": ev.get("trip_id"),
+            "ai_message": db.get_message(ai_id)}
+
+
+def _parse_weight(raw) -> float:
+    try:
+        value = round(float(str(raw).replace(",", ".").replace(" ", "")), 2)
+    except ValueError:
+        raise ValueError(f"Вес «{raw}» не похож на число. Напишите, например, 12.5")
+    if value <= 0:
+        raise ValueError("Вес должен быть больше нуля.")
+    return value
+
+
+def edit_last_event(changes: dict) -> dict:
+    """Правка последнего события: номер, водитель, культура, вес. Прежние значения остаются в журнале."""
+    ev = db.last_active_event()
+    if not ev:
+        raise LookupError("Исправлять нечего: ни одного заезда или выезда ещё не оформлено.")
+    trip = db.get_trip(ev["trip_id"]) if ev.get("trip_id") else None
+    vehicle = db.get_vehicle(ev["vehicle_id"]) if ev.get("vehicle_id") else None
+    if trip is None:
+        raise LookupError("Рейс этого события уже не найден — обновите страницу.")
+    entry = ev["kind"] == "entry"
+    done: list[dict] = []
+
+    plate_raw = (changes.get("plate") or "").strip()
+    if plate_raw and vehicle:
+        from backend.pipeline import plates as plates_mod
+        m = plates_mod.match_plate(plate_raw)
+        compact = m[1] if m else plates_mod.normalize(plate_raw)
+        formatted = m[2] if m else plate_raw.upper()
+        if not compact:
+            raise ValueError("Номер не разобрать. Введите его как на табличке, например 041 AHF 10.")
+        if compact != vehicle.get("plate"):
+            done.append({"field": "номер", "was": vehicle.get("plate_formatted"), "now": formatted})
+            db.update_vehicle(ev["vehicle_id"], plate=compact, plate_formatted=formatted, is_temporary=0)
+
+    fields: dict = {}
+    for key, name in (("driver", "водитель"), ("crop", "культура")):
+        value = (changes.get(key) or "").strip()
+        if value and value != (trip.get(key) or ""):
+            done.append({"field": name, "was": trip.get(key), "now": value})
+            fields[key] = value
+
+    if changes.get("weight") not in (None, ""):
+        value = _parse_weight(changes["weight"])
+        was = trip.get("entry_weight") if entry else trip.get("exit_weight")
+        if value != was:
+            done.append({"field": "вес на заезде" if entry else "вес на выезде", "was": was, "now": value})
+            fields["entry_weight" if entry else "exit_weight"] = value
+            fields["entry_weight_source" if entry else "exit_weight_source"] = WEIGHT_EDITED
+            other = trip.get("exit_weight") if entry else trip.get("entry_weight")
+            if other is not None:
+                fields["net_weight"] = round((value - other) if entry else (other - value), 2)
+
+    if not done:
+        raise ValueError("Ничего не изменилось: впишите новое значение хотя бы в одно поле.")
+    if fields:
+        db.update_trip(trip["id"], **fields)
+    at = now_iso()
+    db.append_event_edit(ev["id"], {"at": at, "changes": done})
+
+    trip = db.get_trip(trip["id"])
+    vehicle = db.get_vehicle(ev["vehicle_id"]) if ev.get("vehicle_id") else None
+    # Ответ ИИ в чате обновляем, иначе он продолжит показывать старый номер и вес.
+    _mark_message(ev.get("ai_message_id"), {
+        "edited": True, "vehicle": vehicle, "trip": trip,
+        "weight": trip.get("entry_weight") if entry else trip.get("exit_weight"),
+        "weight_source": trip.get("entry_weight_source") if entry else trip.get("exit_weight_source"),
+        "plate": {"formatted": (vehicle or {}).get("plate_formatted"), "source": "исправлен весовщиком"},
+    })
+    listed = "; ".join(f"{c['field']}: {c['was'] if c['was'] not in (None, '') else '—'} → {c['now']}" for c in done)
+    ai_id = db.add_message({
+        "created_at": at, "role": "ai",
+        "text": (f"Исправлено весовщиком ({_kind_ru(ev['kind'])}, рейс №{trip['id']}, "
+                 f"{(vehicle or {}).get('label') or ''}): {listed}.\n"
+                 f"Прежние значения остались в журнале правок рейса."),
+        "payload": {"edit_of": ev["id"], "event_kind": "edit", "changes": done, "trip": trip,
+                    "vehicle": vehicle, "alerts": []},
+        "vehicle_id": ev.get("vehicle_id"), "warehouse_id": trip.get("warehouse_id"), "trip_id": trip["id"],
+        "event_kind": "edit",
+    })
+    return {"ok": True, "changes": done, "trip": trip, "vehicle": vehicle,
+            "ai_message": db.get_message(ai_id)}
 
 
 # ---------- сводки для панелей ----------
