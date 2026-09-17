@@ -35,7 +35,9 @@ PLATE_TEMPLATES = [
     ("kz_2012", "DDDLLDD", "{0} {1} {2}"),    # 681 AS 10
     ("kz_2012", "DDLLLDD", "{0} {1} {2}"),    # 98 AAH 10, 45 EUA 10 — есть на кадрах весовой
     ("painted", "DDDDDLL", "{0} {1} {2}"),    # 10 625 AZ (нарисован на борту)
-    ("old_1993", "LDDDLLL", "{0} {1} {2}"),   # P 523 AFE (образец до 2012 г.)
+    # Старый образец «P 523 AFE» (до 2012 г.) отключён по измерению: на 25 кадрах весовой
+    # он не прочитался ни разу, зато перехватывал верные прочтения — «592 LBA 10»
+    # превращалось в «W 592 LBA». Вернуть, когда появятся кадры, где он реально нужен.
 ]
 
 # Сколько символов разрешено «исправить» при подгонке под шаблон. Без этого ограничения
@@ -208,6 +210,14 @@ def looks_like_timestamp(raw: str, compact: str) -> bool:
     return compact.isdigit() and re.search(r"(?:19|20)\d{2}", compact) is not None
 
 
+def _region_first(s: str) -> str | None:
+    """Квадратный номер юрлица двухстрочный, и OCR часто читает код региона первой строкой:
+    «625 AZ 10» приходит как «10625AZ». Возвращает строку с кодом региона, переставленным в конец."""
+    if len(s) == 7 and s[:2].isdigit() and s[:2] in VALID_REGIONS:
+        return s[2:] + s[:2]
+    return None
+
+
 def match_plate_ex(raw: str, strict: bool = True) -> PlateMatch | None:
     """Разбор строки в номер РК. strict=False — для номера, введённого руками."""
     s, dropped = normalize_ex(raw)
@@ -217,6 +227,17 @@ def match_plate_ex(raw: str, strict: bool = True) -> PlateMatch | None:
         return None
     if strict and looks_like_timestamp(raw, s):
         return None
+    # Перестановка допускается, только если она даёт точное совпадение с шаблоном и живой регион:
+    # символы те же, порядок строк у двухстрочного номера распознаванию неизвестен.
+    rotated = _region_first(s)
+    if rotated:
+        for kind, template, fmt in PLATE_TEMPLATES:
+            fit = fit_template(rotated, template)
+            if fit is None or fit[1] != 0 or kind == "painted":
+                continue
+            groups = re.findall(r"\d+|[A-Z]+", rotated)
+            if groups[-1] in VALID_REGIONS:
+                return PlateMatch(kind, rotated, fmt.format(*groups), groups[-1], True, 0)
     best: PlateMatch | None = None
     for kind, template, fmt in PLATE_TEMPLATES:
         fit = fit_template(s, template)
@@ -419,8 +440,71 @@ def read_plate_region(sub_bgr: np.ndarray, offset=(0, 0)) -> list[PlateResult]:
     return sorted(out, key=lambda p: -p.score)
 
 
+_fast_reader = None
+_fast_failed = False
+
+
+def fast_reader():
+    """Специализированный распознаватель номеров. None — если пакеты не установлены."""
+    global _fast_reader, _fast_failed
+    if _fast_reader is None and not _fast_failed:
+        try:
+            from backend.pipeline.plate_reader import PlateReader
+            _fast_reader = PlateReader()
+        except Exception as e:      # нет пакетов или моделей — работаем прежним путём
+            _fast_failed = True
+            print(f"Специализированный распознаватель номеров недоступен ({type(e).__name__}: {e}), "
+                  f"читаем номера прежним способом")
+    return _fast_reader
+
+
+def use_fast_reader() -> bool:
+    mode = str(getattr(config, "PLATE_READER", "auto")).strip().lower()
+    if mode in ("easyocr", "off", "legacy"):
+        return False
+    return fast_reader() is not None
+
+
+def _from_kz_result(res, box, offset) -> PlateResult | None:
+    """Результат специализированного читателя в том же виде, что у прежнего пути."""
+    if not res.readable or not res.text:
+        return None
+    return PlateResult(
+        text=res.text,
+        formatted=res.formatted or res.text,
+        kind=res.layout or "kz_2012",
+        region_code=res.region_code,
+        confidence=res.confidence,
+        bbox=[box[0] + offset[0], box[1] + offset[1], box[2] + offset[0], box[3] + offset[1]],
+        raw="; ".join(str(r) for r in (res.raw_reads or [])[:2]),
+        region_valid=True,          # раскладка принимается только с живым кодом региона
+        fixes=0,
+        votes=res.confidence,
+    )
+
+
+def read_vehicle_fast(crop_bgr: np.ndarray, offset=(0, 0)) -> list[PlateResult]:
+    """Номера на вырезке техники специализированным распознавателем."""
+    reader = fast_reader()
+    if reader is None:
+        return []
+    h, w = crop_bgr.shape[:2]
+    found = []
+    for p in reader.detect(crop_bgr, (0, 0, w, h)):
+        res = reader.read(crop_bgr, p.box)
+        adapted = _from_kz_result(res, p.box, offset)
+        if adapted:
+            found.append(adapted)
+    return sorted(found, key=lambda r: -r.confidence)
+
+
 def read_vehicle(crop_bgr: np.ndarray, offset=(0, 0)) -> tuple[list[PlateResult], list[OcrBox]]:
     """Возвращает (номера, все OCR-блоки первого прохода) для вырезки техники."""
+    if use_fast_reader():
+        # Номера читает специализированная модель, EasyOCR остаётся ради надписей на кабине
+        # (марка техники) — это один проход вместо прежних 14-26.
+        up, scale = upscale_for_ocr(crop_bgr, target_width=1300)
+        return read_vehicle_fast(crop_bgr, offset), ocr_image(up)
     h, w = crop_bgr.shape[:2]
     up, scale = upscale_for_ocr(crop_bgr, target_width=1300)
     boxes = ocr_image(up)

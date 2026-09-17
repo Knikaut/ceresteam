@@ -29,9 +29,13 @@ PLATE_W_CONF = 0.5
 PLATE_BAD_REGION_PENALTY = 0.8
 # Каждый символ, исправленный при подгонке под шаблон, удешевляет прочтение.
 PLATE_FIX_PENALTY = 0.2
-# Ниже порога честнее сказать «номер не прочитан», чем показать выдуманный.
-PLATE_READABLE_MIN = 0.55
-PLATE_SURE_MIN = 0.75
+# Порог подобран перебором по эталонной разметке 25 кадров весовой. Замер (верно/неверно):
+# 0.20 — 5/3, 0.40 — 4/2, 0.55 — 2/1, 0.60 — 2/0. Выдуманных номеров нет ни при одном пороге:
+# их убирают правила разбора, а не порог. Значения перекрываются (ошибка на кадре 17 имеет
+# оценку 0.59, а верное прочтение на кадре 19 — 0.46), поэтому идеального порога не существует.
+# Выбрано 0.40: верных столько же, сколько до всех правок, а неверных вдвое меньше.
+PLATE_READABLE_MIN = 0.40
+PLATE_SURE_MIN = 0.60
 
 
 def plate_reliability(p) -> float:
@@ -151,6 +155,8 @@ def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bo
                     "region_code": best.region_code if readable else None,
                     "format": best.kind,
                     "readable": readable,
+                    # Числовая оценка рядом со словесной: по ней подбирается порог и её видно в отчёте.
+                    "reliability": round(reliability, 2),
                     "confidence": _fmt_conf(reliability),
                     "ocr_confidence": round(best.confidence, 3),
                     "agreement": round(best.votes, 2),

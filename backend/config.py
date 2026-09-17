@@ -40,6 +40,9 @@ OCR_LANGS = ["en", "ru"]
 # "cpu"/"off" — только процессор; "gpu"/"on" — любой ускоритель (на маке это mps);
 # можно указать устройство явно: "cuda", "cuda:1", "mps".
 OCR_GPU = os.environ.get("OCR_GPU", "auto")
+# Чем читать номера: "auto" — специализированной моделью, если пакеты установлены,
+# иначе прежним EasyOCR; "easyocr" — принудительно прежним путём.
+PLATE_READER = os.environ.get("PLATE_READER", "auto")
 
 # Реестр data.egov.kz: марка/модель/год по номеру. Ключ необязателен (без него — поиск как на сайте).
 REGISTRY_ENABLED = os.environ.get("REGISTRY_ENABLED", "on")
