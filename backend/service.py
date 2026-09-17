@@ -16,6 +16,9 @@ IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 # Минимальное сходство гистограмм, чтобы предложить «похожую» машину.
 APPEARANCE_MATCH = 0.85
+# На сколько лучший кандидат должен опережать второго. Значение выбрано как защита,
+# а не подобрано по данным: для калибровки нужны повторные приезды одних и тех же машин.
+APPEARANCE_MARGIN = 0.05
 # Быстрый оборот подозрителен: за это время разгрузиться нельзя.
 MIN_TURNAROUND_MIN = 3
 
@@ -105,8 +108,13 @@ def _main_vehicle(report: dict) -> dict | None:
 
 def _find_by_appearance(fp: list[float], exclude_id: str | None = None,
                         predicate=None) -> tuple[dict | None, float]:
-    """Самая похожая машина по отпечатку; predicate(v) — дополнительный фильтр кандидатов."""
-    best, best_sim = None, 0.0
+    """Самая похожая машина по отпечатку, но только если она заметно похожее остальных.
+
+    Отпечаток — это цветовая гистограмма вырезки вместе с куском фона, поэтому две белые
+    фуры на одной площадке дают близкие значения. Если второй кандидат почти так же похож,
+    отличить их нельзя, и честнее не узнать машину, чем приписать рейс чужой.
+    """
+    best, best_sim, second_sim = None, 0.0, 0.0
     for v in db.list_vehicles():
         if v["id"] == exclude_id or not v.get("fingerprint"):
             continue
@@ -114,7 +122,11 @@ def _find_by_appearance(fp: list[float], exclude_id: str | None = None,
             continue
         sim = fingerprint.similarity(fp, v["fingerprint"])
         if sim > best_sim:
-            best, best_sim = v, sim
+            best, best_sim, second_sim = v, sim, best_sim
+        elif sim > second_sim:
+            second_sim = sim
+    if best is not None and best_sim - second_sim < APPEARANCE_MARGIN:
+        return None, best_sim
     return best, best_sim
 
 
@@ -294,7 +306,11 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
         "id": vehicle_id, "plate": plate_compact, "plate_formatted": plate_formatted,
         "manufacturer": main.get("manufacturer"), "model": main.get("model"),
         "equipment_type": main.get("equipment_type"), "year": main.get("year"), "color": appearance.get("color"),
-        "appearance": appearance or None, "fingerprint": fp, "photo": files.get("vehicle_crop"),
+        "appearance": appearance or None,
+        # Узнали по внешности — эталонный отпечаток не трогаем: иначе профиль «отравляется»
+        # чужим кадром и следующие сопоставления идут уже от испорченного образца.
+        "fingerprint": None if recognized_by_appearance else fp,
+        "photo": files.get("vehicle_crop"),
         "is_temporary": temporary, "seen_at": event_time,
     })
 

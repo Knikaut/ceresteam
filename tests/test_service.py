@@ -187,3 +187,39 @@ def test_правка_негодным_весом_отклоняется(вес�
     with pytest.raises(ValueError):
         service.edit_last_event({"weight": "nan"})
     assert db.list_trips()[0]["entry_weight"] == 20.0, "Вес испорчен неудачной правкой"
+
+
+# ---------- узнавание по внешности ----------
+
+def test_две_похожие_машины_не_дают_узнавания(весовая, monkeypatch):
+    """Отпечаток — цветовая гистограмма: две белые фуры на одной площадке похожи одинаково.
+    Когда второй кандидат почти так же похож, узнавать нельзя."""
+    import backend.service as service
+
+    весовая.отправить(отчёт(plate="041AHF10"))
+    весовая.отправить(отчёт(source_image="2.jpg", plate="384CBA10"), seed=7)
+
+    monkeypatch.setattr(service.fingerprint, "similarity", lambda a, b: 0.93)
+    кандидат, сходство = service._find_by_appearance([0.0] * 288)
+
+    assert кандидат is None, (
+        f"Машина «узнана» при сходстве {сходство:.2f}, хотя второй кандидат так же похож"
+    )
+
+
+def test_узнавание_по_внешности_не_перезаписывает_эталон(весовая, monkeypatch):
+    """Иначе профиль отравляется чужим кадром и дальше ошибается охотнее."""
+    import backend.service as service
+
+    весовая.отправить(отчёт(plate="041AHF10"))
+    эталон_до = db.get_vehicle("1")["fingerprint"]
+
+    monkeypatch.setattr(service.fingerprint, "similarity", lambda a, b: 0.96)
+    результат = весовая.отправить(отчёт(source_image="2.jpg", plate=None), seed=9)
+
+    assert (результат["ai_message"]["payload"] or {}).get("recognized_by_appearance"), (
+        "Машина не узнана по внешности — тест проверяет не то, что нужно"
+    )
+    assert db.get_vehicle("1")["fingerprint"] == эталон_до, (
+        "Эталонный отпечаток перезаписан кадром, опознанным лишь по внешности"
+    )
