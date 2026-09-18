@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Проверка машин</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --line: #dfe3ea; --blue: #1f6fe5; --muted: #6b7788; --ok: #22a55b; --warn: #d9822b; --bad: #d64545; --bg: #f3f5f8; --ink: #1c2533; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; font: 14px/1.35 "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--ink);
+         display: flex; flex-direction: column; overflow: hidden; }
+  header { background: #101826; color: #fff; padding: 8px 16px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; flex: none; }
+  header b { font-size: 16px; }
+  header a { color: #9fc2ff; text-decoration: none; font-size: 13px; }
+  .bar { height: 8px; width: 200px; background: #2a3a55; border-radius: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--ok); transition: width .2s; }
+  .tip { color: #cfd8e6; font-size: 13px; }
+  #strip { display: flex; flex-wrap: wrap; gap: 2px; padding: 5px 16px; background: #fff; border-bottom: 1px solid var(--line); flex: none; }
+  #strip button { width: 10px; height: 12px; padding: 0; border: 1px solid #b9c2d0; border-radius: 2px; background: #eef1f5; cursor: pointer; }
+  #strip button.v { background: var(--ok); border-color: var(--ok); }
+  #strip button.fix { background: var(--warn); border-color: var(--warn); }
+  #strip button.cur { outline: 2px solid var(--blue); outline-offset: 1px; }
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 520px; }
+  .viewer { display: flex; flex-direction: column; min-height: 0; background: #0d121b; }
+  .stage { flex: 1; min-height: 0; position: relative; }
+  .stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .box { position: absolute; border: 3px solid #ffcf33; box-shadow: 0 0 0 1px #000; pointer-events: none; display: none; }
+  .under { flex: none; display: flex; gap: 12px; align-items: stretch; padding: 6px 8px; color: #cfd8e6; font-size: 12px; }
+  .thumb { position: relative; width: 180px; height: 102px; cursor: pointer; border: 1px solid #33415a; border-radius: 6px; overflow: hidden; background: #000; flex: none; }
+  .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .thumb span { position: absolute; left: 0; right: 0; bottom: 0; background: #000a; color: #fff; padding: 2px 6px; font-size: 11px; }
+  .meta { display: flex; flex-direction: column; gap: 3px; justify-content: center; min-width: 0; }
+  .meta b { color: #fff; font-size: 13px; }
+  .keys { margin-left: auto; align-self: center; max-width: 360px; color: #9aa7bb; font-size: 11px; line-height: 1.6; }
+  .keys kbd { font: 11px ui-monospace, monospace; border: 1px solid #3a4862; border-bottom-width: 2px; border-radius: 3px; padding: 0 4px; background: #1a2436; color: #fff; }
+  /* Правая колонка: списки прокручиваются, кнопки действий снизу видны всегда */
+  .panel { min-height: 0; background: #fff; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+  .panel-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 14px; display: flex; flex-direction: column; gap: 6px; }
+  .panel-foot { flex: none; padding: 10px 14px 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; background: #fff; }
+  .agent { border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; background: #f8fafc; }
+  .agent .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .agent .t { font-size: 16px; font-weight: 700; }
+  .agent .s { color: var(--muted); font-size: 12px; }
+  .status { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 10px; display: inline-block; }
+  .status.no { background: #eef1f5; color: var(--muted); }
+  .status.yes { background: #e3f6ea; color: #177a41; }
+  .status.fix { background: #fdefe2; color: #9a520f; }
+  h4 { margin: 0 0 3px; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+  .opts { display: grid; gap: 4px; }
+  .opts.c3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .opts.c5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .opts button { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 3px 6px; cursor: pointer; font: inherit; font-size: 12px; text-align: left; line-height: 1.25;
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .opts button:hover { border-color: var(--blue); }
+  .opts button[aria-pressed="true"] { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .opts button.agent-pick { box-shadow: inset 3px 0 0 var(--ok); }
+  .opts button.unk { grid-column: 1 / -1; }
+  .opts kbd { font: 11px ui-monospace, monospace; color: var(--muted); margin-right: 4px; }
+  .opts button[aria-pressed="true"] kbd { color: #d8e6ff; }
+  .model { display: flex; gap: 6px; }
+  .model input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; }
+  .model button { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 5px 8px; cursor: pointer; font: inherit; font-size: 12px; }
+  .go { border: 0; border-radius: 8px; padding: 10px; font: inherit; font-size: 16px; font-weight: 700; color: #fff; background: var(--ok); cursor: pointer; }
+  .go.dirty { background: var(--warn); }
+  .go:disabled { opacity: .5; cursor: default; }
+  .nav { display: flex; gap: 6px; }
+  .nav button { flex: 1; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 6px; cursor: pointer; font: inherit; font-size: 13px; }
+  .nav button:disabled { opacity: .45; cursor: default; }
+  .rule { color: var(--muted); font-size: 11px; }
+  #msg { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: #101826; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 14px; display: none; z-index: 10; max-width: 90vw; }
+  #msg.bad { background: var(--bad); }
+  #done { position: fixed; inset: 0; background: #0d121bdd; display: none; align-items: center; justify-content: center; z-index: 9; }
+  #done div { background: #fff; border-radius: 12px; padding: 28px 32px; text-align: center; max-width: 440px; }
+  #done h2 { margin: 0 0 8px; color: #177a41; }
+  #done button { margin-top: 14px; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 8px 14px; cursor: pointer; font: inherit; }
+  @media (max-width: 1100px) { main { grid-template-columns: minmax(0, 1fr) 440px; } .opts.c5 { grid-template-columns: repeat(4, minmax(0, 1fr)); } .opts button { font-size: 11px; padding: 3px 4px; } .keys { display: none; } }
+  @media (max-width: 800px) {
+    body { overflow: auto; height: auto; }
+    main { grid-template-columns: minmax(0, 1fr); }
+    .stage { height: 55vh; flex: none; }
+    .panel { border-left: 0; }
+    .panel-body { overflow: visible; }
+    .panel-foot { position: sticky; bottom: 0; box-shadow: 0 -4px 12px #0001; }
+    .opts.c5 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .thumb { width: 140px; height: 80px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <b>Проверка машин</b>
+  <span id="progress">…</span>
+  <div class="bar"><i id="bar" style="width:0"></i></div>
+  <span class="tip" id="pos"></span>
+  <label class="tip"><input type="checkbox" id="only-todo" checked> листать только непроверенные</label>
+  <a href="/">← все карточки</a>
+</header>
+<nav id="strip" aria-label="Все проверочные машины"></nav>
+<main>
+  <section class="viewer">
+    <div class="stage" id="stage"><img id="big" alt=""><div class="box" id="big-box"></div></div>
+    <div class="under">
+      <div class="thumb" id="thumb" title="Поменять местами (Пробел)"><img id="small" alt=""><div class="box" id="small-box"></div><span id="thumb-cap"></span></div>
+      <div class="meta" id="meta"></div>
+      <div class="keys">
+        <kbd>Enter</kbd> верно / сохранить и дальше · <kbd>←</kbd> <kbd>→</kbd> листать<br>
+        <kbd>1</kbd>–<kbd>9</kbd>, <kbd>0</kbd> тип техники · <kbd>Esc</kbd> отменить правки<br>
+        <kbd>Пробел</kbd> или клик по миниатюре — весь кадр ↔ машина крупно
+      </div>
+    </div>
+  </section>
+  <section class="panel">
+    <div class="panel-body">
+      <div class="agent">
+        <div class="row"><span class="s">Ответ агентов</span><span class="status no" id="status"></span></div>
+        <div class="t" id="agent-label"></div><div class="s" id="agent-info"></div>
+      </div>
+      <div><h4>Тип техники</h4><div class="opts c3" id="types"></div></div>
+      <div><h4>Марка</h4><div class="opts c5" id="makes"></div></div>
+      <div>
+        <h4>Модель <span style="text-transform:none;font-weight:400">— если не уверены, «не знаю»</span></h4>
+        <div class="model"><input id="model" list="models" placeholder="например К-744, ГАЗ-3307" autocomplete="off"><button id="no-model">не знаю</button></div>
+        <datalist id="models"></datalist>
+      </div>
+      <div class="rule">Зелёная полоска слева у кнопки — ответ агентов. Не угадывайте: если по фото не понять, выберите «не видно / не определить».</div>
+    </div>
+    <div class="panel-foot">
+      <button class="go" id="go">✓ Верно — дальше</button>
+      <div class="nav">
+        <button id="prev">← Назад</button>
+        <button id="reset">Отменить правки</button>
+        <button id="next">Дальше →</button>
+      </div>
+    </div>
+  </section>
+</main>
+<div id="msg"></div>
+<div id="done"><div><h2>Все машины проверены ✓</h2><p>Напишите Claude в чат — можно запускать обучение.</p><button id="review-again">Пролистать ещё раз</button></div></div>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const UNKNOWN = "не видно / не определить";
+const CONF = { high: "уверенность высокая", medium: "уверенность средняя", low: "уверенность низкая" };
+const VIEW = { front: "вид спереди", rear: "вид сзади", side: "вид сбоку", partial: "видна частично" };
+const store = {  // запоминаем место и фильтр; без localStorage (приватное окно) страница просто начнёт сначала
+  get(k) { try { return localStorage.getItem("review." + k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem("review." + k, v); } catch { /* ничего */ } },
+};
+
+let DATA, LABELS = {}, META = {}, BY_ID = {}, ORDER = [], idx = 0;
+let draft = null, modelTouched = false, showFrame = false, busy = false;
+
+const cur = () => ORDER[idx];
+const saved = () => LABELS[cur()] || {};
+const norm = (v) => v || "";
+const isDirty = () => draft && ["type", "make", "model"].some((f) => norm(draft[f]) !== norm(saved()[f]));
+const changedByHuman = (l) => l.agent && ["type", "make", "model"].some((f) => norm(l[f]) !== norm(l.agent[f]));
+const verifiedCount = () => ORDER.filter((id) => LABELS[id]?.verified).length;
+
+function toast(text, bad = false) {
+  const m = $("#msg");
+  m.textContent = text;
+  m.className = bad ? "bad" : "";
+  m.style.display = "block";
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => (m.style.display = "none"), bad ? 6000 : 2200);
+}
+
+function imgs(id) {
+  const has = !!META[id];
+  return { crop: has ? `review/${encodeURIComponent(id)}_crop.jpg` : `img/${encodeURIComponent(id)}.jpg`,
+           frame: has ? `review/${encodeURIComponent(id)}_frame.jpg` : null };
+}
+
+// Рамка машины поверх кадра: пересчитываем, где картинка реально легла внутри object-fit: contain
+function placeBox(img, box, bbox) {
+  if (!bbox || !img.naturalWidth) return (box.style.display = "none");
+  const W = img.clientWidth, H = img.clientHeight, s = Math.min(W / img.naturalWidth, H / img.naturalHeight);
+  const dw = img.naturalWidth * s, dh = img.naturalHeight * s, ox = (W - dw) / 2, oy = (H - dh) / 2;
+  Object.assign(box.style, { display: "block", left: `${ox + bbox[0] * dw}px`, top: `${oy + bbox[1] * dh}px`,
+                             width: `${(bbox[2] - bbox[0]) * dw}px`, height: `${(bbox[3] - bbox[1]) * dh}px` });
+}
+function placeBoxes() {
+  const bbox = META[cur()]?.bbox;
+  placeBox($("#big"), $("#big-box"), showFrame ? bbox : null);
+  placeBox($("#small"), $("#small-box"), showFrame ? null : bbox);
+}
+
+function renderImages() {
+  const id = cur(), { crop, frame } = imgs(id);
+  const view = showFrame && frame ? frame : crop, other = showFrame && frame ? crop : frame;
+  $("#big-box").style.display = $("#small-box").style.display = "none";
+  $("#big").src = view;
+  $("#thumb").style.display = other ? "" : "none";
+  if (other) $("#small").src = other;
+  $("#thumb-cap").textContent = showFrame ? "машина крупно (Пробел)" : "весь кадр (Пробел)";
+  // заранее грузим следующую машину, чтобы Enter не ждал картинку
+  const nid = ORDER[(idx + 1) % ORDER.length], n = imgs(nid);
+  [n.crop, n.frame].filter(Boolean).forEach((src) => (new Image().src = src));
+}
+
+function renderStrip() {
+  $("#strip").innerHTML = ORDER.map((id, i) => {
+    const l = LABELS[id] || {}, cls = [l.verified ? (changedByHuman(l) ? "fix" : "v") : "", i === idx ? "cur" : ""].join(" ");
+    return `<button class="${cls}" data-i="${i}" title="${i + 1}. ${esc(l.type)} · ${esc(l.make)}${l.verified ? " — проверено" : ""}"></button>`;
+  }).join("");
+}
+
+function renderPanel() {
+  const id = cur(), l = saved(), a = l.agent || {}, it = BY_ID[id], m = META[id];
+  $("#agent-label").textContent = [a.type, a.make, a.model].filter(Boolean).join(" · ") || "—";
+  $("#agent-info").textContent = [CONF[l.confidence], VIEW[l.view],
+    l.source === "agree" ? "оба агента согласны" : l.source ? "агенты разошлись, решал третий" : ""].filter(Boolean).join(" · ");
+  const st = $("#status");
+  if (l.verified) {
+    const fix = changedByHuman(l);
+    st.className = `status ${fix ? "fix" : "yes"}`;
+    st.textContent = fix ? "✓ проверено — вы исправили ответ агентов" : "✓ проверено — ответ агентов верный";
+  } else {
+    st.className = "status no";
+    st.textContent = "ещё не проверено";
+  }
+  const btn = (field, v, i, extra = "") => {
+    const key = field === "type" && i < 10 ? `<kbd>${(i + 1) % 10}</kbd>` : "";
+    const cls = [v === a[field] ? "agent-pick" : "", field === "make" && v === UNKNOWN ? "unk" : "", extra].join(" ");
+    return `<button class="${cls}" data-f="${field}" data-v="${esc(v)}" title="${esc(v)}${v === a[field] ? " — ответ агентов" : ""}"
+      aria-pressed="${norm(draft[field]) === v}">${key}${esc(v)}</button>`;
+  };
+  $("#types").innerHTML = DATA.types.map((t, i) => btn("type", t, i)).join("");
+  $("#makes").innerHTML = DATA.makes.map((mk, i) => btn("make", mk, i)).join("");
+  const input = $("#model");
+  if (document.activeElement !== input) input.value = norm(draft.model);
+  const dirty = isDirty(), go = $("#go");
+  go.classList.toggle("dirty", dirty);
+  go.textContent = dirty ? "✓ Сохранить исправление — дальше" : l.verified ? "✓ Верно — дальше" : "✓ Ответ агентов верный — дальше";
+  go.disabled = busy || !(draft.type && draft.make);
+  $("#reset").disabled = !dirty;
+  $("#prev").disabled = $("#next").disabled = ORDER.length < 2;
+  const cam = it ? `камера ${esc(it.camera)} · ${esc(it.date)}` : "";
+  const det = m ? `детектор: ${esc(m.yolo_class)} ${Math.round((m.conf || 0) * 100)}%` : "полный кадр не загружен — показано превью";
+  $("#meta").innerHTML = `<b>Машина ${idx + 1} из ${ORDER.length}</b><span>${cam}</span><span>${det}</span>
+    ${it && it.group_size > 1 ? `<span>эта машина есть ещё на ${it.group_size - 1} похож. кадрах</span>` : ""}`;
+}
+
+function renderHeader() {
+  const v = verifiedCount();
+  $("#progress").textContent = `проверено ${v} из ${ORDER.length}`;
+  $("#bar").style.width = `${(100 * v) / ORDER.length}%`;
+  $("#pos").textContent = `машина ${idx + 1} из ${ORDER.length}`;
+  $("#done").style.display = v === ORDER.length && !render.dismissed ? "flex" : "none";
+}
+
+function render() {
+  renderHeader();
+  renderStrip();
+  renderPanel();
+}
+
+function open(i) {
+  idx = (i + ORDER.length) % ORDER.length;
+  const l = saved();
+  draft = { type: l.type, make: l.make, model: l.model };
+  modelTouched = false;
+  showFrame = false;
+  $("#msg").style.display = "none";  // предупреждение про прошлую машину здесь уже не к месту
+  store.set("pos", cur());
+  renderImages();
+  render();
+}
+
+// Следующая по кругу; с галочкой «только непроверенные» — следующая непроверенная
+function step(dir) {
+  const onlyTodo = $("#only-todo").checked;
+  for (let k = 1; k <= ORDER.length; k++) {
+    const j = (idx + dir * k + ORDER.length) % ORDER.length;
+    if (!onlyTodo || !LABELS[ORDER[j]]?.verified) return j;
+  }
+  return null;
+}
+
+function move(dir) {
+  if (isDirty()) return toast("Есть несохранённая правка: Enter — сохранить, Esc — отменить", true);
+  const j = step(dir);
+  if (j === null) return toast("Все машины проверены. Снимите галочку «только непроверенные», чтобы листать всё.");
+  open(j);
+}
+
+function setDraft(field, value) {
+  if (field === "make" && !modelTouched) {
+    // модель агентов относится к их марке: сменили марку — старая модель уже неверна
+    draft.model = value === saved().make ? saved().model : "";
+  }
+  if (field === "model") modelTouched = true;
+  draft[field] = value;
+  renderPanel();
+}
+
+async function commit() {
+  if (busy || !(draft.type && draft.make)) return;
+  const id = cur(), patch = { [id]: { type: draft.type, make: draft.make, model: draft.model || null, verified: true, human: true } };
+  busy = true;
+  renderPanel();
+  try {
+    const r = await fetch("/update", { method: "POST", body: JSON.stringify(patch) });
+    if (!r.ok) throw new Error(`сервер ответил ${r.status}`);
+    const res = await r.json();
+    LABELS[id] = res.labels[id];
+  } catch (e) {
+    busy = false;
+    renderPanel();
+    return toast(`Не сохранилось (${e.message}). Страница разметки запущена? Попробуйте ещё раз.`, true);
+  }
+  busy = false;
+  draft = { type: LABELS[id].type, make: LABELS[id].make, model: LABELS[id].model };
+  const j = step(1);
+  if (j === null || j === idx) { render(); return; }
+  open(j);
+}
+
+async function reload() {
+  LABELS = await fetch("labels.json").then((r) => r.json());
+  render();
+}
+
+document.addEventListener("click", (e) => {
+  const opt = e.target.closest(".opts button");
+  if (opt) return setDraft(opt.dataset.f, opt.dataset.v);
+  const sq = e.target.closest("#strip button");
+  if (sq) {
+    if (isDirty()) return toast("Есть несохранённая правка: Enter — сохранить, Esc — отменить", true);
+    return open(+sq.dataset.i);
+  }
+});
+$("#go").onclick = commit;
+$("#prev").onclick = () => move(-1);
+$("#next").onclick = () => move(1);
+$("#reset").onclick = () => open(idx);
+$("#no-model").onclick = () => { setDraft("model", ""); $("#model").value = ""; };
+$("#model").addEventListener("input", (e) => setDraft("model", e.target.value.trim()));
+$("#thumb").onclick = () => { showFrame = !showFrame; renderImages(); };
+$("#only-todo").onchange = (e) => store.set("todo", e.target.checked ? "1" : "0");
+$("#review-again").onclick = () => { render.dismissed = true; $("#only-todo").checked = false; store.set("todo", "0"); open(0); };
+$("#big").onload = $("#small").onload = placeBoxes;
+new ResizeObserver(placeBoxes).observe($("#stage"));
+
+document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey || e.altKey || e.metaKey) return;
+  const inInput = e.target.tagName === "INPUT" && e.target.type !== "checkbox";
+  if (e.key === "Enter") { e.preventDefault(); if (!e.repeat) commit(); return; }
+  if (e.key === "Escape") { if (inInput) e.target.blur(); open(idx); return; }
+  if (inInput) return;
+  if (e.key === "ArrowRight") { e.preventDefault(); move(1); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); move(-1); }
+  else if (e.key === " ") { e.preventDefault(); if (imgs(cur()).frame) { showFrame = !showFrame; renderImages(); } }
+  else if (/^[0-9]$/.test(e.key)) {
+    const t = DATA.types[(+e.key + 9) % 10];
+    if (t) setDraft("type", t);
+  }
+});
+// Вернулись на вкладку — перечитать метки: их могли поменять на странице со всеми карточками
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && DATA && !isDirty()) reload(); });
+
+(async () => {
+  try {
+    [DATA, LABELS] = await Promise.all([fetch("items.json").then((r) => r.json()), fetch("labels.json").then((r) => r.json())]);
+    META = await fetch("review/review_meta.json").then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+  } catch (e) {
+    document.body.innerHTML = `<p style="padding:24px">Не удалось загрузить данные: ${esc(e.message)}</p>`;
+    return;
+  }
+  BY_ID = Object.fromEntries(DATA.items.map((it) => [it.crop_id, it]));
+  const tests = DATA.items.filter((it) => LABELS[it.crop_id]?.test).map((it) => it.crop_id);
+  if (!tests.length) { document.body.innerHTML = '<p style="padding:24px">Проверочных машин нет (нет меток test).</p>'; return; }
+  // Порядок: машины одной марки подряд (частые марки первыми, «не видно» в конце) — так быстрее глазу
+  const agentMake = (id) => LABELS[id].agent?.make || LABELS[id].make;
+  const freq = {};
+  tests.forEach((id) => (freq[agentMake(id)] = (freq[agentMake(id)] || 0) + 1));
+  const rank = (mk) => (mk === UNKNOWN ? 1e6 : -freq[mk]);
+  ORDER = tests.sort((x, y) => rank(agentMake(x)) - rank(agentMake(y)) || agentMake(x).localeCompare(agentMake(y), "ru")
+    || BY_ID[x].cluster - BY_ID[y].cluster || x.localeCompare(y));
+  const models = {};
+  Object.values(LABELS).forEach((l) => l.model && (models[l.model] = (models[l.model] || 0) + 1));
+  $("#models").innerHTML = Object.keys(models).sort((x, y) => models[y] - models[x]).map((m) => `<option value="${esc(m)}">`).join("");
+  if (store.get("todo") === "0") $("#only-todo").checked = false;
+  const last = ORDER.indexOf(store.get("pos"));
+  let start = last >= 0 ? last : 0;
+  if ($("#only-todo").checked && LABELS[ORDER[start]]?.verified) {
+    idx = start;
+    start = step(1) ?? start;
+  }
+  open(start);
+})();
+</script>
+</body>
+</html>

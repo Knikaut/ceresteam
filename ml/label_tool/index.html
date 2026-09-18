@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Разметка техники</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --line: #dfe3ea; --blue: #1f6fe5; --muted: #6b7788; --ok: #22a55b; --bg: #f3f5f8; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.35 "Segoe UI", system-ui, sans-serif; background: var(--bg); color: #1c2533; }
+  header { position: sticky; top: 0; z-index: 5; background: #101826; color: #fff; padding: 10px 16px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  header b { font-size: 16px; }
+  .bar { height: 6px; width: 220px; background: #2a3a55; border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--ok); }
+  .panel { position: sticky; top: 52px; z-index: 4; background: #fff; border-bottom: 1px solid var(--line); padding: 8px 16px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .panel .grp { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+  .panel button { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 4px 8px; cursor: pointer; font: inherit; font-size: 12px; }
+  .panel button:hover { border-color: var(--blue); }
+  .panel .lbl { color: var(--muted); font-size: 12px; margin-right: 4px; }
+  main { padding: 12px 16px 80px; }
+  .cluster { margin-bottom: 18px; }
+  .cluster h3 { margin: 6px 0; font-size: 13px; color: var(--muted); font-weight: 600; display: flex; gap: 10px; align-items: center; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+  .card { background: #fff; border: 2px solid var(--line); border-radius: 10px; overflow: hidden; cursor: pointer; position: relative; }
+  .card.sel { border-color: var(--blue); box-shadow: 0 0 0 2px #cfe0ff; }
+  .card.done { border-color: var(--ok); }
+  .card img { width: 100%; height: 150px; object-fit: contain; background: #111; display: block; }
+  .card .info { padding: 6px 8px; font-size: 12px; }
+  .card .hint { color: var(--muted); }
+  .card .lab { font-weight: 600; color: var(--ok); }
+  .card .meta { color: var(--muted); font-size: 11px; }
+  .card .test { position: absolute; top: 6px; left: 6px; background: #fff4e0; color: #9a6b00; font-size: 11px; border-radius: 4px; padding: 1px 6px; }
+  .tip { color: #cfd8e6; font-size: 12px; }
+  input.model { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px; width: 180px; }
+</style>
+</head>
+<body>
+<header>
+  <b>Разметка техники</b>
+  <a href="/review" style="background:#22a55b;color:#fff;border-radius:6px;padding:5px 12px;text-decoration:none;font-weight:600">Проверка 100 машин по одной →</a>
+  <span id="progress">…</span>
+  <div class="bar"><i id="bar" style="width:0"></i></div>
+  <label class="tip"><input type="checkbox" id="only-todo"> только неразмеченные</label>
+  <label class="tip"><input type="checkbox" id="only-test"> только проверка <span id="test-progress"></span></label>
+  <span class="tip">Клик — выбрать карточку, Shift+клик — диапазон, «Выбрать группу» у кластера. Потом кнопка марки/типа — метка ставится всем выбранным.</span>
+</header>
+<div class="panel">
+  <span class="lbl">Выбрано: <b id="nsel">0</b></span>
+  <button id="clear-sel">Снять выбор</button>
+  <button id="confirm" title="Метка верна — отметить выбранные как проверенные человеком">✓ Метка верна</button>
+  <button id="accept-hint" title="Поставить выбранным карточкам топ-1 подсказку по марке и типу">Принять подсказку</button>
+  <button id="erase">Стереть метку</button>
+  <input class="model" id="model" placeholder="Модель (ГАЗ-53, К-700…) + Enter">
+</div>
+<div class="panel"><span class="lbl">Тип:</span><div class="grp" id="types"></div></div>
+<div class="panel"><span class="lbl">Марка:</span><div class="grp" id="makes"></div></div>
+<main id="main">Загрузка…</main>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+let DATA, LABELS = {}, SEL = new Set(), lastClicked = null;
+
+async function post(url, patch) {
+  const r = await fetch(url, { method: "POST", body: JSON.stringify(patch) });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  // Сервер возвращает метки как они легли в файл — берём их, а не свою догадку
+  Object.entries((await r.json()).labels || {}).forEach(([k, v]) => (v == null ? delete LABELS[k] : (LABELS[k] = v)));
+  render();
+}
+
+// Заменить метку целиком (null — удалить). Нужно только для «Стереть метку».
+async function save(patch) {
+  Object.entries(patch).forEach(([k, v]) => (v === null ? delete LABELS[k] : (LABELS[k] = v)));
+  render();
+  await post("/save", patch).catch((e) => alert("Не сохранилось: " + e.message));
+}
+
+// Поменять только присланные поля: старая копия меток в этой вкладке не затрёт то,
+// что сделано на экране проверки или в другой вкладке.
+async function update(patch) {
+  Object.entries(patch).forEach(([k, v]) => (LABELS[k] = { ...(LABELS[k] || {}), ...v }));
+  render();
+  await post("/update", patch).catch((e) => alert("Не сохранилось: " + e.message));
+}
+
+function setField(field, value) {
+  if (!SEL.size) return alert("Сначала выберите карточки");
+  const patch = {};
+  // Любая правка человеком: метка становится ручной, а проверочная вырезка — проверенной.
+  SEL.forEach((id) => (patch[id] = { [field]: value, human: true, ...(LABELS[id]?.test ? { verified: true } : {}) }));
+  update(patch);
+}
+
+function render() {
+  const onlyTodo = $("#only-todo").checked, onlyTest = $("#only-test").checked;
+  const byCluster = {};
+  DATA.items.filter((it) => !onlyTest || LABELS[it.crop_id]?.test).forEach((it) => (byCluster[it.cluster] ??= []).push(it));
+  const tests = DATA.items.filter((it) => LABELS[it.crop_id]?.test);
+  $("#test-progress").textContent = tests.length ? `(проверено ${tests.filter((it) => LABELS[it.crop_id].verified).length} из ${tests.length})` : "";
+  const total = DATA.items.length, done = DATA.items.filter((it) => LABELS[it.crop_id]?.make && LABELS[it.crop_id]?.type).length;
+  $("#progress").textContent = `размечено ${done} из ${total}`;
+  $("#bar").style.width = `${(100 * done) / total}%`;
+  $("#nsel").textContent = SEL.size;
+  $("#main").innerHTML = Object.entries(byCluster).map(([c, items]) => {
+    const shown = onlyTodo ? items.filter((it) => !(LABELS[it.crop_id]?.make && LABELS[it.crop_id]?.type)) : items;
+    if (!shown.length) return "";
+    return `<section class="cluster"><h3>Группа ${esc(c)} · ${items.length} шт. <button data-cluster="${esc(c)}" class="pick">Выбрать группу</button></h3>
+      <div class="grid">${shown.map((it) => {
+        const l = LABELS[it.crop_id] || {};
+        return `<div class="card ${SEL.has(it.crop_id) ? "sel" : ""} ${l.make && l.type ? "done" : ""}" data-id="${esc(it.crop_id)}">
+          ${l.test ? `<span class="test">${l.verified ? "✓ проверено" : "проверка"}</span>` : ""}
+          <img loading="lazy" src="img/${encodeURIComponent(it.crop_id)}.jpg" alt="">
+          <div class="info">
+            ${l.type || l.make ? `<div class="lab">${esc(l.type || "?")} · ${esc(l.make || "?")}${l.model ? " · " + esc(l.model) : ""}${l.source && !l.human ? ` <span class="hint">(агенты${l.confidence ? ", " + esc(l.confidence) : ""})</span>` : ""}</div>` : ""}
+            <div class="hint">подсказка: ${esc(it.type_hint[0][0])} · ${esc(it.make_hint[0][0])} (${Math.round(it.make_hint[0][1] * 100)}%)</div>
+            <div class="meta">камера ${esc(it.camera)} · ${esc(it.date)} · повторов ${esc(it.group_size)}</div>
+          </div></div>`;
+      }).join("")}</div></section>`;
+  }).join("");
+}
+
+document.addEventListener("click", (e) => {
+  const pick = e.target.closest(".pick");
+  if (pick) {
+    DATA.items.filter((it) => String(it.cluster) === pick.dataset.cluster).forEach((it) => SEL.add(it.crop_id));
+    return render();
+  }
+  const card = e.target.closest(".card");
+  if (!card) return;
+  const id = card.dataset.id;
+  if (e.shiftKey && lastClicked) {
+    const ids = [...document.querySelectorAll(".card")].map((c) => c.dataset.id);
+    const [a, b] = [ids.indexOf(lastClicked), ids.indexOf(id)].sort((x, y) => x - y);
+    ids.slice(a, b + 1).forEach((x) => SEL.add(x));
+  } else {
+    SEL.has(id) ? SEL.delete(id) : SEL.add(id);
+  }
+  lastClicked = id;
+  render();
+});
+$("#clear-sel").onclick = () => { SEL.clear(); render(); };
+// Стирание сохраняет отметку «проверочная», иначе вырезка тихо выпадет из проверки.
+$("#erase").onclick = () => { const p = {}; SEL.forEach((id) => (p[id] = LABELS[id]?.test ? { test: true } : null)); save(p); };
+$("#accept-hint").onclick = () => {
+  if (!SEL.size) return alert("Сначала выберите карточки");
+  const byId = Object.fromEntries(DATA.items.map((it) => [it.crop_id, it]));
+  const patch = {};
+  SEL.forEach((id) => (patch[id] = { type: byId[id].type_hint[0][0], make: byId[id].make_hint[0][0] }));
+  update(patch);
+};
+$("#model").addEventListener("keydown", (e) => { if (e.key === "Enter") { setField("model", e.target.value.trim() || null); e.target.value = ""; } });
+$("#only-todo").onchange = render;
+$("#only-test").onchange = () => { SEL.clear(); render(); };
+$("#confirm").onclick = () => {
+  if (!SEL.size) return alert("Сначала выберите карточки");
+  const patch = {};
+  SEL.forEach((id) => { if (LABELS[id]?.make && LABELS[id]?.type) patch[id] = { verified: true, human: true }; });
+  SEL.clear();
+  update(patch);
+};
+// Вернулись на вкладку — перечитать метки: их могли поменять на экране проверки.
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState !== "visible" || !DATA) return;
+  LABELS = await fetch("labels.json").then((r) => r.json());
+  render();
+});
+
+(async () => {
+  DATA = await fetch("items.json").then((r) => r.json());
+  LABELS = await fetch("labels.json").then((r) => r.json());
+  $("#types").innerHTML = DATA.types.map((t) => `<button data-t="${esc(t)}">${esc(t)}</button>`).join("");
+  $("#makes").innerHTML = DATA.makes.map((m) => `<button data-m="${esc(m)}">${esc(m)}</button>`).join("");
+  $("#types").onclick = (e) => e.target.dataset.t && setField("type", e.target.dataset.t);
+  $("#makes").onclick = (e) => e.target.dataset.m && setField("make", e.target.dataset.m);
+  render();
+})();
+</script>
+</body>
+</html>
