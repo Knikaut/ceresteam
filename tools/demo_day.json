@@ -1,0 +1,27 @@
+{
+  "_comment": "Рабочий день на Складе №1 · Элеватор для показа: 9 закрытых рейсов, 3 машины на складе, 2 предупреждения (номер трактора не читается; КамАЗ с кадра 1.jpg заезжает пустым). Кадры — из папки камеры (25 шт.), выбраны самые понятные: номер читается, марка определяется. Дата не задана — берётся сегодняшняя.",
+  "warehouse_id": "W1",
+  "events": [
+    {"time": "07:42", "frame": "18.jpg", "kind": "entry"},
+    {"time": "08:05", "frame": "19.jpg", "kind": "entry"},
+    {"time": "08:31", "frame": "18.jpg", "kind": "exit"},
+    {"time": "08:36", "frame": "3.jpg", "kind": "entry", "note": "Кузов накрыт тентом"},
+    {"time": "08:58", "frame": "19.jpg", "kind": "exit"},
+    {"time": "09:12", "frame": "10.jpg", "kind": "entry"},
+    {"time": "09:24", "frame": "3.jpg", "kind": "exit"},
+    {"time": "09:47", "frame": "20.jpg", "kind": "entry"},
+    {"time": "10:03", "frame": "10.jpg", "kind": "exit"},
+    {"time": "10:18", "frame": "25.jpg", "kind": "entry"},
+    {"time": "10:29", "frame": "8.jpg", "kind": "exit"},
+    {"time": "10:55", "frame": "4.jpg", "kind": "entry", "note": "С прицепом"},
+    {"time": "11:07", "frame": "25.jpg", "kind": "exit"},
+    {"time": "11:30", "frame": "11.jpg", "kind": "entry"},
+    {"time": "11:46", "frame": "4.jpg", "kind": "exit"},
+    {"time": "12:02", "frame": "14.jpg", "kind": "entry"},
+    {"time": "12:14", "frame": "11.jpg", "kind": "exit"},
+    {"time": "12:41", "frame": "5.jpg", "kind": "entry"},
+    {"time": "12:49", "frame": "14.jpg", "kind": "exit"},
+    {"time": "13:08", "frame": "13.jpg", "kind": "entry"},
+    {"time": "13:26", "frame": "1.jpg", "kind": "entry"}
+  ]
+}

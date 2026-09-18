@@ -69,6 +69,7 @@ def get_model():
     global _model
     if _model is None:
         from ultralytics import YOLO
+        config.limit_cpu_threads()
         model = YOLO(config.YOLO_MODEL)
         try:
             model.to(get_device())

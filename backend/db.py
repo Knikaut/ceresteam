@@ -112,6 +112,8 @@ MIGRATIONS = [
     # их нельзя — на части кадров часы камеры показывают 2019 год.
     ("trips", "entry_time_source", "TEXT"),
     ("trips", "exit_time_source", "TEXT"),
+    # Путевой лист рейса (JSON, имитация — backend/waybill.py): водитель и груз берутся из него.
+    ("trips", "waybill", "TEXT"),
 ]
 
 
@@ -147,7 +149,7 @@ def _row(r: sqlite3.Row | None) -> dict | None:
     if r is None:
         return None
     d = dict(r)
-    for k in ("appearance", "fingerprint", "alerts", "files", "payload", "snapshot", "edits"):
+    for k in ("appearance", "fingerprint", "alerts", "files", "payload", "snapshot", "edits", "waybill"):
         if k in d and isinstance(d[k], str):
             try:
                 d[k] = json.loads(d[k])
@@ -236,12 +238,13 @@ def create_trip(t: dict) -> int:
     with cursor() as cur:
         cur.execute(
             "INSERT INTO trips (vehicle_id, warehouse_id, driver, crop, entry_time, entry_weight, entry_message_id, "
-            "entry_load_state, entry_has_trailer, alerts, entry_weight_source, entry_time_source) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "entry_load_state, entry_has_trailer, alerts, entry_weight_source, entry_time_source, waybill) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (t["vehicle_id"], t["warehouse_id"], t.get("driver"), t.get("crop"), t["entry_time"],
              t.get("entry_weight"), t.get("entry_message_id"), t.get("entry_load_state"),
              t.get("entry_has_trailer"), json.dumps(t.get("alerts", []), ensure_ascii=False),
-             t.get("entry_weight_source"), t.get("entry_time_source")),
+             t.get("entry_weight_source"), t.get("entry_time_source"),
+             json.dumps(t["waybill"], ensure_ascii=False) if t.get("waybill") else None),
         )
         return cur.lastrowid
 

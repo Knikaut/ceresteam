@@ -24,7 +24,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Весовая · контроль техники", version="0.1", lifespan=lifespan)
+app = FastAPI(title="Ceres · контроль техники", version="0.1", lifespan=lifespan)
 
 # Один кадр обрабатывается за раз: модели на CPU, параллелить смысла нет.
 _lock = asyncio.Lock()
@@ -32,6 +32,7 @@ _lock = asyncio.Lock()
 
 class CaptureRequest(BaseModel):
     frame: str | None = None
+    random: bool = False   # имитация камеры весовой: случайный кадр, весовщик его не выбирает
 
 
 class ReportRequest(BaseModel):
@@ -82,7 +83,7 @@ def get_warehouse(warehouse_id: str):
 @app.post("/api/camera/capture")
 def camera_capture(req: CaptureRequest):
     try:
-        return service.capture_frame(req.frame)
+        return service.capture_frame(req.frame, random_pick=req.random)
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
 

@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>Весовая · контроль техники</title>
+<title>Ceres · контроль техники</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <link rel="stylesheet" href="/style.css">
@@ -10,7 +10,7 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><span class="logo">В</span> ВЕСОВАЯ AI <span class="tag">AGRO</span></div>
+  <div class="brand"><span class="logo">C</span> CERES <span class="tag">AGRO</span></div>
   <div class="topbar-title">Контроль техники и рейсов на весовой</div>
   <div class="topbar-right">
     <span id="role-label" class="role-label"></span>
@@ -21,14 +21,14 @@
 
 <div id="role-screen" class="role-screen hidden">
   <div class="role-card">
-    <div class="brand dark"><span class="logo">В</span> ВЕСОВАЯ AI</div>
+    <div class="brand dark"><span class="logo">C</span> CERES</div>
     <h1>Кто работает с системой?</h1>
     <p class="muted">Выбор запоминается на этом компьютере. Сменить роль можно в верхней панели.</p>
     <div class="role-options">
       <button class="role-option" data-role="weigher">
         <span class="role-icon">⚖️</span>
         <b>Весовщик</b>
-        <span class="muted small">Чат с ИИ: снимок с камеры, фамилия, культура, вес. Заезд и выезд машин.</span>
+        <span class="muted small">Чат с ИИ: снимок с камеры, вес с весов, водитель и груз из путевого листа. Заезд и выезд машин.</span>
       </button>
       <button class="role-option" data-role="manager">
         <span class="role-icon">🗺️</span>
@@ -45,9 +45,10 @@
     <div class="panel-head">
       <div><b>Техника</b><div class="muted small">профили машин из базы</div></div>
       <span id="vehicle-count" class="badge">0 ед.</span>
+      <button id="btn-panel" class="ghost small panel-toggle" title="Свернуть список техники">‹</button>
     </div>
     <input id="search" class="search" placeholder="Поиск: №, госномер, марка…">
-    <div id="vehicle-list" class="vehicle-list"><div class="empty">Пока нет машин. Сделайте снимок с камеры.</div></div>
+    <div id="vehicle-list" class="vehicle-list"><div class="empty">Пока нет машин. Весовщик загружает фото машины в чат.</div></div>
   </aside>
 
   <!-- Центр: чат -->
@@ -55,10 +56,9 @@
     <div class="panel-head">
       <div><b>Чат с ИИ-ассистентом</b> <span class="muted small">· общий · анализ снимков с весовой</span></div>
       <div class="camera-bar">
-        <span class="dot green"></span><span id="camera-info" class="small muted">камера…</span>
-        <select id="frame-select" class="small" title="Выбрать кадр вручную"></select>
-        <button id="btn-capture" class="primary small">📷 Снимок с камеры</button>
-        <label class="ghost small btn-like">Загрузить фото<input id="file-input" type="file" accept="image/*" hidden></label>
+        <button type="button" id="btn-camera" class="btn-like camera-btn" title="Камера на весах: машина заехала — камера делает снимок">📷 Подключить камеру</button>
+        <button type="button" id="scale-badge" class="scale-badge" title="Весы подключены по COM-порту: вес машины снимается автоматически">⚖ Весы · <span id="scale-port">COM3</span> <span class="dot green"></span>подключены</button>
+        <label class="btn-like upload-btn" title="Фото машины на весах — с компьютера весовщика (можно и перетащить в чат)">📎 Загрузить фото с компьютера<input id="file-input" type="file" accept="image/*" hidden></label>
       </div>
     </div>
 
@@ -69,16 +69,13 @@
         <img id="attachment-img" alt="снимок">
         <div class="attachment-meta">
           <div id="attachment-name"></div>
-          <div class="small muted">снимок с камеры прикреплён автоматически</div>
+          <div class="small muted">снимок прикреплён · вес — с весов, водитель и груз — из путевого листа. Выберите склад и отправьте</div>
         </div>
         <button type="button" id="attachment-remove" class="ghost small">✕</button>
       </div>
       <div id="composer-hint" class="composer-hint small hidden" role="alert"></div>
       <div class="fields">
-        <input id="f-driver" placeholder="Фамилия водителя">
-        <input id="f-crop" placeholder="Культура (пшеница, ячмень…)">
         <select id="f-warehouse"></select>
-        <input id="f-weight" placeholder="Вес, т (пусто = весы)">
         <input id="f-plate" placeholder="Номер, если ИИ ошибся">
       </div>
       <div class="composer-row">
@@ -94,18 +91,11 @@
       <div><b>Склады в полях</b><div class="muted small">карта OSM / спутник · склады условные; события — с камер</div></div>
       <span class="badge live">● LIVE</span>
     </div>
-    <div id="map" class="map"><div class="map-offline muted small">Карта не загрузилась (нет интернета?) — маркеры складов всё равно доступны ниже.</div></div>
-    <div id="warehouse-list" class="warehouse-list"></div>
+    <div id="map" class="map"><div class="map-offline muted small">Карта не загрузилась (нет интернета?) — склады показаны списком.</div></div>
+    <!-- Список складов — только запасной вариант, если карта не загрузилась; обычно склад открывают кликом на карте -->
+    <div id="warehouse-list" class="warehouse-list hidden"></div>
   </aside>
 </main>
-
-<footer class="statusbar">
-  <span><span class="dot green"></span> Система активна</span>
-  <span id="status-camera">Камера: —</span>
-  <span id="status-vlm">VLM: —</span>
-  <span id="status-time">—</span>
-  <span id="status-territory">На территории: 0 ед.</span>
-</footer>
 
 <div id="modal" class="modal hidden">
   <div class="modal-card">
@@ -115,6 +105,16 @@
 </div>
 
 <div id="lightbox" class="lightbox hidden"><img alt=""></div>
+
+<!-- Имитация камеры весовой: подключение → снимок → снимок сам прикрепляется в чат -->
+<div id="camera-dialog" class="camera-dialog hidden" role="dialog" aria-live="polite" aria-label="Камера весовой">
+  <div class="camera-card">
+    <div class="camera-head"><span class="rec">●</span> Камера весовой</div>
+    <div class="camera-view"><img id="camera-shot" alt=""><div class="camera-flash"></div></div>
+    <div id="camera-steps" class="camera-steps"></div>
+    <button type="button" id="camera-close" class="ghost small hidden">Закрыть</button>
+  </div>
+</div>
 
 <script src="/app.js"></script>
 </body>

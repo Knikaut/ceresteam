@@ -17,9 +17,24 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from backend import config
 from backend.pipeline import kz_plates
 
 CPU = ["CPUExecutionProvider"]
+
+
+def _session_options():
+    """Потоки ONNX Runtime по квоте процессора — только если она меньше числа видимых ядер (контейнер).
+    Замер на сервере организаторов (квота 2 ядра из 8 видимых): номер читался 36 с."""
+    if not config.cpu_threads_limited():
+        return None   # на ноутбуке всё как было: ONNX Runtime сам берёт все ядра
+    import onnxruntime as ort
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = config.CPU_THREADS
+    so.inter_op_num_threads = 1
+    # без «прокрутки» свободные потоки не жгут квоту в ожидании работы
+    so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    return so
 
 
 @dataclass
@@ -35,8 +50,11 @@ class PlateReader:
         from fast_plate_ocr import LicensePlateRecognizer
         from open_image_models import LicensePlateDetector
 
-        self.detector = LicensePlateDetector(detection_model=detector_model, conf_thresh=det_conf, providers=CPU)
-        self.ocrs = [LicensePlateRecognizer(m, providers=CPU) for m in ocr_models]
+        config.limit_cpu_threads()
+        so = _session_options()
+        self.detector = LicensePlateDetector(detection_model=detector_model, conf_thresh=det_conf,
+                                             providers=CPU, sess_options=so)
+        self.ocrs = [LicensePlateRecognizer(m, providers=CPU, sess_options=so) for m in ocr_models]
         self.min_conf = min_conf
 
     # ---------- детекция ----------

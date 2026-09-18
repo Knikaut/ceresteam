@@ -66,15 +66,20 @@ def test_негодный_вес_не_попадает_в_отчёт(весов�
     assert рейс["entry_weight"] == рейс["entry_weight"], "В базу попал nan"
 
 
-def test_вес_из_генератора_помечен_как_непомеренный(весовая):
-    """Придуманный вес нельзя показывать как показание весов: им спорят с водителем."""
+def test_вес_с_весов_com_порта_помечен_как_имитация(весовая):
+    """Вес приходит с весов на COM-порту, но весов у нас нет — показание придумано.
+    Его нельзя выдавать за настоящее взвешивание: им спорят с водителем."""
+    from backend import config, scale
     результат = весовая.отправить(отчёт())
     рейс = db.list_trips()[0]
 
-    assert "генератор" in (рейс["entry_weight_source"] or "").lower(), (
-        f"Источник веса: {рейс['entry_weight_source']!r} — не видно, что вес придуман"
+    источник = рейс["entry_weight_source"] or ""
+    assert config.SCALE_PORT in источник and "имитац" in источник, (
+        f"Источник веса: {источник!r} — не видно, что это имитация весов на {config.SCALE_PORT}"
     )
     assert (результат["ai_message"]["payload"] or {}).get("weight_measured") is False
+    последнее = scale.status()["last"]
+    assert последнее and последнее["weight_t"] == рейс["entry_weight"], "Интерфейс покажет не то показание весов"
 
 
 def test_введённый_вес_помечен_как_ручной(весовая):
@@ -82,6 +87,70 @@ def test_введённый_вес_помечен_как_ручной(весов
     рейс = db.list_trips()[0]
     assert рейс["entry_weight"] == 12.5, "Запятая в весе не разобрана"
     assert "вручную" in (рейс["entry_weight_source"] or ""), рейс["entry_weight_source"]
+
+
+def test_в_ответе_есть_данные_для_таблицы(весовая):
+    """Чат и карточки руководителя показывают ответ таблицей — ей нужны тип, марка, источник, склад, время."""
+    результат = весовая.отправить(отчёт(), driver="Иванов", crop="Пшеница", weight="20", note="под тентом")
+    d = результат["ai_message"]["payload"]["details"]
+    assert d["manufacturer"] == "МАЗ" and d["model"] == "5551", d
+    assert d["identified_by"] == "надпись на технике", d["identified_by"]
+    assert d["warehouse"] and d["event_time"] and d["time_note"], d
+    assert d["note"] == "под тентом"
+
+
+def test_водитель_и_груз_берутся_из_путевого_листа(весовая):
+    """Весовщик их больше не вводит: путевой лист (имитация) выписан на рейс, на выезде — тот же."""
+    заезд = весовая.отправить(отчёт(timestamp=КАДР_ЗАЕЗД))
+    рейс = db.list_trips()[0]
+    лист = рейс["waybill"]
+    assert лист and лист["number"], "Путевой лист не сохранён в рейсе"
+    assert (рейс["driver"], рейс["crop"]) == (лист["driver"]["name"], лист["task"]["cargo"])
+    assert f"Путевой лист №{лист['number']}" in заезд["ai_message"]["text"]
+
+    выезд = весовая.отправить(отчёт(source_image="2.jpg", timestamp=КАДР_ВЫЕЗД_ПОЗЖЕ), seed=1)
+    assert выезд["ai_message"]["payload"]["details"]["waybill"]["number"] == лист["number"], "На выезде другой лист"
+    assert db.get_trip(рейс["id"])["driver"] == лист["driver"]["name"], "Выезд стёр водителя из листа"
+
+
+def test_водитель_переданный_в_запросе_важнее_путевого_листа(весовая):
+    весовая.отправить(отчёт(), driver="Иванов", crop="Пшеница")
+    рейс = db.list_trips()[0]
+    assert (рейс["driver"], рейс["crop"]) == ("Иванов", "Пшеница")
+
+
+def test_за_машиной_закреплён_один_водитель_а_лист_на_каждый_рейс_свой():
+    from backend import waybill
+    первый = waybill.issue("7", {"equipment_type": "самосвал"}, "2026-09-18 10:00:00", visit_no=1)
+    второй = waybill.issue("7", {"equipment_type": "самосвал"}, "2026-09-19 12:00:00", visit_no=3)
+    assert первый["driver"] == второй["driver"] and первый["number"] != второй["number"]
+    трактор = waybill.issue("8", {"equipment_type": "трактор"}, "2026-09-18 10:00:00", visit_no=1)
+    assert трактор["title"] == "Путевой лист трактора" and "engine_hours" in трактор["departure"]
+
+
+def test_камера_весовой_даёт_случайный_кадр_без_повтора_подряд():
+    """Кнопка «Подключить камеру»: весовщик кадр не выбирает, один кадр два раза подряд не выпадает."""
+    import backend.service as service
+    from backend import config
+    for имя in ("1.jpg", "2.jpg", "3.jpg"):
+        (config.DATA_DIR / имя).write_bytes(b"\xff\xd8 frame")
+    кадры = [service.capture_frame(random_pick=True)["frame"] for _ in range(30)]
+    assert set(кадры) <= {"1.jpg", "2.jpg", "3.jpg"} and len(set(кадры)) > 1, кадры
+    assert all(a != b for a, b in zip(кадры, кадры[1:])), f"Один кадр подряд: {кадры}"
+
+
+@pytest.mark.parametrize("слово", ["пусто", "Нет", " - "])
+def test_слово_пусто_в_поле_веса_значит_вес_с_весов(весовая, слово):
+    """Подсказка в поле была «пусто = весы» — весовщица так и писала «пусто» и получала тревогу."""
+    результат = весовая.отправить(отчёт(), weight=слово)
+    assert not найти(весовая.предупреждения(результат), "не похож на число"), весовая.предупреждения(результат)
+    assert "имитац" in (db.list_trips()[0]["entry_weight_source"] or "").lower()
+
+
+def test_каждое_предупреждение_своей_строкой(весовая):
+    результат = весовая.отправить(отчёт(), weight="абв", warehouse_id="")
+    строки = [s for s in результат["ai_message"]["text"].split("\n") if s.startswith("⚠")]
+    assert len(строки) >= 2 and all(s.count("⚠") == 1 for s in строки), строки
 
 
 def test_без_брутто_на_заезде_нетто_не_считается(весовая):
@@ -119,6 +188,33 @@ def test_сбитые_часы_камеры_видны_когда_оба_вре�
     assert найти(весовая.предупреждения(результат), "раньше времени заезда"), (
         весовая.предупреждения(результат)
     )
+
+
+def test_сводка_склада_делит_приёмку_и_отгрузку(весовая):
+    """Руководителю: сколько всего принято и отгружено, сколько машин ждёт выезда, по культурам.
+    Раньше «принято» складывало и отрицательное нетто и показывало −1 т после одной отгрузки."""
+    import backend.service as service
+    from backend import warehouses
+    весовая.отправить(отчёт(timestamp=КАДР_ЗАЕЗД), weight="20", crop="пшеница")
+    весовая.отправить(отчёт(source_image="2.jpg", timestamp=КАДР_ВЫЕЗД_ПОЗЖЕ), seed=1, weight="8", crop="Пшеница")
+    весовая.отправить(отчёт(plate="123ABC10", timestamp=КАДР_ЗАЕЗД), seed=2, weight="5", crop="ячмень")
+    весовая.отправить(отчёт(plate="123ABC10", source_image="2.jpg", timestamp=КАДР_ВЫЕЗД_ПОЗЖЕ),
+                      seed=3, weight="7", crop="ячмень")
+    весовая.отправить(отчёт(plate="555XYZ10", timestamp=КАДР_ЗАЕЗД), seed=4, weight="15")
+    # Сбитые часы камеры: заезд «в 2019», выезд в 2026 — в среднее время на весовой попадать не должно
+    весовая.отправить(отчёт(plate="777KLM10", timestamp=КАДР_ЗАЕЗД), seed=5, weight="10", crop="лён")
+    весовая.отправить(отчёт(plate="777KLM10", source_image="2.jpg", timestamp="2026-09-15 14:12:35"),
+                      seed=6, weight="4", crop="лён")
+
+    s = service.warehouse_summary(warehouses.get("W1"))
+    assert (s["received_t"], s["shipped_t"]) == (18.0, 2.0), (s["received_t"], s["shipped_t"])
+    assert s["load_t"] == 18.0, "Отгрузка не должна уменьшать принятое на склад"
+    assert s["by_crop"]["Лён"]["received_t"] == 6.0, s["by_crop"]
+    assert s["count_now"] == 1 and s["awaiting_gross_t"] == 15.0, s["on_site"]
+    assert s["by_crop"]["Пшеница"]["received_t"] == 12.0, s["by_crop"]
+    assert s["by_crop"]["Ячмень"]["shipped_t"] == 2.0, s["by_crop"]
+    assert s["alert_kinds"].get("выезд тяжелее заезда") == 1, s["alert_kinds"]
+    assert s["avg_turnaround_min"] == 92, "21:58 → 23:30 по надписи камеры — 92 минуты"
 
 
 def test_нормальный_оборот_по_кадрам_тревоги_не_даёт(весовая):

@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from backend.pipeline import annotate, detector, makes, plates, registry, vlm
+from backend.pipeline import annotate, detector, fallback, makes, plates, registry, vlm
 
 TYPE_BY_CLASS = {
     "truck": "Грузовой автомобиль",
@@ -49,6 +49,14 @@ def plate_reliability(p) -> float:
             - PLATE_FIX_PENALTY * p.fixes)
 
 
+def plate_verdict(best) -> tuple[float, bool]:
+    """Надёжность лучшего прочтения и решение «номер читается». Одно правило и для отчёта,
+    и для замеров точности (ml/plate_suggest.py) — чтобы замер мерил ровно то, что выдаёт приложение."""
+    reliability = plate_reliability(best)
+    порог = PLATE_READABLE_MIN_FAST if getattr(best, "source", "") == "fast" else PLATE_READABLE_MIN
+    return reliability, reliability >= порог
+
+
 def _fmt_conf(value: float) -> str:
     """Словесная оценка. Границы совпадают с порогом читаемости: показанный номер не бывает «низкой» уверенности."""
     return ("высокая" if value >= PLATE_SURE_MIN else
@@ -87,6 +95,50 @@ def apply_registry(entry: dict, record: dict | None) -> None:
     if record.get("type") and entry.get("equipment_type") in (None, "Техника", "Грузовой автомобиль"):
         entry["equipment_type"] = record["type"].capitalize()
     set_country(entry)
+
+
+FALLBACK_SOURCE = "обученная модель по виду машины"
+
+
+def needs_fallback(entry: dict) -> bool:
+    """Запасной классификатор нужен, если номер не прочитан (реестр недоступен) или марка/модель пусты."""
+    plate = entry.get("license_plate") or {}
+    return not plate.get("readable") or not entry.get("manufacturer") or not entry.get("model")
+
+
+def apply_fallback(entry: dict, guess: dict | None) -> None:
+    """Ответ запасного классификатора — только в пустые поля. Реестр и надпись на технике важнее."""
+    if not guess:
+        return
+    entry["fallback"] = guess      # в отчёте видно, что сказала модель и насколько уверена
+    make, model = guess.get("make"), guess.get("model")
+    if model and model["confident"] and not (make and make["confident"]):
+        # Марка не уверена, а модель уверена («КамАЗ-5511» при марке «не видно») — марка следует из модели
+        owner = fallback.make_of_model(model["value"])
+        if owner:
+            make = {**model, "value": owner}
+    if make and make["confident"]:
+        name = fallback.display_make(make["value"])
+        if not entry.get("manufacturer"):
+            entry["manufacturer"] = name
+            entry["manufacturer_confidence"] = f"средняя ({FALLBACK_SOURCE}, {make['confidence']:.0%})"
+        elif not makes.same_make(entry["manufacturer"], name):
+            entry["notes"] += (f"По виду машины обученная модель считает маркой {name} "
+                               f"({make['confidence']:.0%}), по реестру/надписи — {entry['manufacturer']}. ")
+    if model and model["confident"] and not entry.get("model"):
+        # Модель берём, только если она той же марки, что уже в отчёте: иначе выйдет «КамАЗ К-744»
+        owner = fallback.display_make(fallback.make_of_model(model["value"]))
+        if entry.get("manufacturer") and makes.same_make(owner, entry["manufacturer"]):
+            entry["model"] = model["value"]
+            entry["model_confidence"] = f"средняя ({FALLBACK_SOURCE}, {model['confidence']:.0%})"
+
+
+def apply_fallback_type(entry: dict, guess: dict | None, generic: str) -> None:
+    """Тип техники от классификатора — если ни VLM, ни реестр не дали ничего точнее «грузовика» YOLO."""
+    kind = (guess or {}).get("type")
+    if kind and kind["confident"] and entry.get("equipment_type") in (generic, "Техника"):
+        entry["equipment_type"] = kind["value"][:1].upper() + kind["value"][1:]
+        entry["equipment_type_source"] = f"{FALLBACK_SOURCE}, {kind['confidence']:.0%}"
 
 
 def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bool = True) -> dict:
@@ -150,10 +202,7 @@ def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bo
 
             if found:
                 best = found[0]
-                reliability = plate_reliability(best)
-                порог = (PLATE_READABLE_MIN_FAST if getattr(best, "source", "") == "fast"
-                         else PLATE_READABLE_MIN)
-                readable = reliability >= порог
+                reliability, readable = plate_verdict(best)
                 entry["license_plate"] = {
                     # Ненадёжное прочтение не выдаём за номер: выдуманный номер хуже пустого поля.
                     "text": best.text if readable else None,
@@ -203,6 +252,11 @@ def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bo
                 entry["registry_status"] = status
                 apply_registry(entry, record)
 
+            # Номер не прочитан или марка/модель не найдены — спрашиваем обученную модель (бесплатно,
+            # локально). До VLM: заполненное ей VLM уже не перетирает, а только дополняет.
+            guess = fallback.classify(img, v.bbox) if needs_fallback(entry) else None
+            apply_fallback(entry, guess)
+
             if use_vlm and vlm.enabled():
                 hints = f"надпись на технике: {brand_text}" if brand_text else ""
                 desc = vlm.describe_vehicle(annotate.crop_with_margin(img, v.bbox, margin=0.15), hints)
@@ -213,7 +267,8 @@ def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bo
                         entry["manufacturer"] = desc["manufacturer"]
                         entry["manufacturer_confidence"] = desc.get("manufacturer_confidence")
                     elif desc.get("manufacturer") and known and not makes.same_make(desc["manufacturer"], known):
-                        entry["notes"] += f"VLM считает производителем {desc['manufacturer']}, по данным реестра/надписи — {known}. "
+                        entry["notes"] += (f"VLM считает производителем {desc['manufacturer']}, в отчёте — {known} "
+                                           f"({entry.get('manufacturer_confidence') or 'источник не указан'}). ")
                     if desc.get("model") and not entry.get("model"):
                         # Модель VLM берём, только если она про ту же марку, иначе получится «МАЗ Actros».
                         if not known or makes.same_make(desc.get("manufacturer"), known):
@@ -232,6 +287,7 @@ def analyze_image(image_path: str | Path, use_vlm: bool = True, use_registry: bo
                         "description": desc.get("appearance"),
                         "source": desc.get("_model"),
                     }
+            apply_fallback_type(entry, guess, TYPE_BY_CLASS.get(v.cls, "Техника"))
             if entry["model"] is None:
                 entry["model"] = "не определена"
             set_country(entry)

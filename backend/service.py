@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import math
+import random
 import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
 
-from backend import config, db, warehouses, weights
+from backend import config, db, scale, warehouses, waybill
 from backend.pipeline import analyze, annotate, export, fingerprint, registry, vlm
 
 CAPTURES_DIR = config.RESULTS_DIR / "captures"
@@ -25,9 +26,9 @@ MIN_TURNAROUND_MIN = 3
 # что машину при следующем приезде не узнали и завели заново.
 MAX_OPEN_HOURS = 12
 
-# Откуда взялся вес. Реальных весов в демо нет, и выдавать генератор за показания нельзя.
+# Откуда взялся вес. Весы на COM-порту имитируются (backend/scale.py) — так и подписываем, чтобы
+# имитацию не приняли за настоящее взвешивание. «Вручную» — вес, переданный в запросе API.
 WEIGHT_MANUAL = "введён вручную"
-WEIGHT_GENERATED = "не измерен: придуман демо-генератором, весы не подключены"
 WEIGHT_EDITED = "введён вручную при исправлении"
 # Больше этого не весит даже автопоезд с прицепом: скорее всего перепутаны единицы.
 MAX_WEIGHT_T = 200.0
@@ -69,12 +70,23 @@ def used_frames() -> list[str]:
     return db.guard_frames()
 
 
-def capture_frame(frame: str | None = None) -> dict:
-    """«Снимок с камеры»: берёт кадр из папки (следующий неиспользованный или указанный)."""
+_last_random_frame: str | None = None
+
+
+def capture_frame(frame: str | None = None, random_pick: bool = False) -> dict:
+    """«Снимок с камеры»: берёт кадр из папки (следующий неиспользованный, указанный или случайный).
+
+    random_pick — имитация камеры весовой: машина заехала, камера сама сделала снимок. Весовщик не
+    выбирает кадр, как и в жизни; один и тот же кадр два раза подряд не выпадает.
+    """
+    global _last_random_frame
     frames = list_frames()
     if not frames:
         raise FileNotFoundError(f"В папке камеры нет кадров: {config.DATA_DIR}")
-    if frame is None:
+    if random_pick and frame is None:
+        frame = random.choice([f for f in frames if f != _last_random_frame] or frames)
+        _last_random_frame = frame
+    elif frame is None:
         used = set(used_frames())
         frame = next((f for f in frames if f not in used), frames[0])
     if frame not in frames:
@@ -146,7 +158,7 @@ def process_capture(capture_id: str, guard: dict) -> dict:
     guard_text = ", ".join(x for x in [
         f"водитель: {guard['driver']}" if guard.get("driver") else "",
         f"культура: {guard['crop']}" if guard.get("crop") else "",
-        f"вес: {guard['weight']} т" if guard.get("weight") not in (None, "") else "",
+        f"вес: {guard['weight']} т" if not _weight_left_empty(guard.get("weight")) else "",
         f"номер: {guard['plate_override']}" if guard.get("plate_override") else "",
         guard.get("note") or "",
     ] if x) or "Машина на весах."
@@ -328,19 +340,26 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
     load_state = appearance.get("load_state")
     has_trailer = appearance.get("has_trailer")
     manual_weight = None
-    if guard.get("weight") not in (None, ""):
+    if not _weight_left_empty(guard.get("weight")):
         try:
             manual_weight = _parse_weight(guard["weight"])
         except ValueError as e:
-            alerts.append(f"{e} Пока подставлен вес из генератора.")
+            alerts.append(f"{e} Взят вес с весов.")
 
-    weight_source = WEIGHT_MANUAL if manual_weight is not None else WEIGHT_GENERATED
+    weight_source = WEIGHT_MANUAL if manual_weight is not None else scale.source()
 
     open_trip = db.open_trip_for(vehicle_id)
     trip_before = db.raw_trip(open_trip["id"]) if open_trip else None
+    # Путевой лист (имитация): на заезде выписан диспетчером, на выезде тот же, что в рейсе.
+    # Водителя и груз весовщик больше не вводит — они из листа; поля guard остаются для API и тестов.
+    wb = (open_trip or {}).get("waybill") or waybill.issue(
+        vehicle_id, {**main, "plate_formatted": plate_formatted}, event_time,
+        visit_no=len(db.list_trips(vehicle_id=vehicle_id)) + 1, has_trailer=has_trailer)
+    driver = guard.get("driver") or wb["driver"]["name"]
+    crop = guard.get("crop") or wb["task"]["cargo"]
     if open_trip:
         event_kind = "exit"
-        weight = manual_weight if manual_weight is not None else weights.generate(
+        weight = manual_weight if manual_weight is not None else scale.read(
             "exit", vehicle_id, main.get("manufacturer"), main.get("equipment_type"), load_state)
         entry_w = open_trip.get("entry_weight")
         net = round(entry_w - weight, 2) if entry_w is not None else None
@@ -377,20 +396,20 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
             "exit_load_state": load_state, "exit_has_trailer": has_trailer, "net_weight": net,
             "exit_time_source": time_source,
             "alerts": (open_trip.get("alerts") or []) + alerts, "exit_weight_source": weight_source,
-            "driver": guard.get("driver") or None, "crop": guard.get("crop") or None,
+            "driver": driver, "crop": crop,
         })
         trip_id = open_trip["id"]
         summary = (f"Выезд. Тара {_fmt_t(weight)} ({weight_source}), брутто на заезде {_fmt_t(entry_w)}, "
                    f"нетто {_fmt_t(net)}. Рейс №{trip_id} закрыт.")
     else:
         event_kind = "entry"
-        weight = manual_weight if manual_weight is not None else weights.generate(
+        weight = manual_weight if manual_weight is not None else scale.read(
             "entry", vehicle_id, main.get("manufacturer"), main.get("equipment_type"), load_state)
         if load_state == "пустой":
             alerts.append("Машина заезжает пустой — возможно, это отгрузка, а не приёмка")
         trip_id = db.create_trip({
-            "vehicle_id": vehicle_id, "warehouse_id": wh["id"], "driver": guard.get("driver"),
-            "crop": guard.get("crop"), "entry_time": event_time, "entry_weight": weight,
+            "vehicle_id": vehicle_id, "warehouse_id": wh["id"], "driver": driver,
+            "crop": crop, "entry_time": event_time, "entry_weight": weight, "waybill": wb,
             "entry_message_id": guard_msg_id, "entry_load_state": load_state, "entry_has_trailer": has_trailer,
             "alerts": alerts, "entry_weight_source": weight_source, "entry_time_source": time_source,
         })
@@ -427,6 +446,14 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
         lines.append("В открытых данных data.egov.kz номер не найден (набор неполный) — марка/модель по фото и надписям.")
     elif registry_status == registry.UNAVAILABLE:
         lines.append("Реестр data.egov.kz недоступен (нет сети или таймаут) — номер не проверялся, марка/модель по фото и надписям.")
+    # Сырые вероятности — в JSON (блок fallback); в чате — словами: ответ выдаётся, только если он выше
+    # порога, при котором на проверке модель права в ≥90% случаев. «35%» среди 12 моделей в чате пугало бы зря.
+    make_by_model = analyze.FALLBACK_SOURCE in (main.get("manufacturer_confidence") or "")
+    model_by_model = analyze.FALLBACK_SOURCE in (main.get("model_confidence") or "")
+    if make_by_model or model_by_model:
+        what = "Марку и модель" if make_by_model and model_by_model else "Марку" if make_by_model else "Модель"
+        names = ", ".join(main[f] for f, used in (("manufacturer", make_by_model), ("model", model_by_model)) if used)
+        lines.append(f"{what} ({names}) определила по виду машины обученная модель.")
     if appearance.get("description"):
         lines.append(f"Внешность: {appearance['description']}")
     if recognized_by_appearance:
@@ -436,13 +463,12 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
         lines.append(f"Профиль №{plateless_match['id']} (без номера) получил номер {plate_formatted}.")
     lines.append(summary)
     lines.append(f"Склад: {wh['name']}. Время: {event_time} ({time_note}).")
-    if guard.get("driver") or guard.get("crop"):
-        lines.append(f"Со слов охранника: водитель {guard.get('driver') or '—'}, культура {guard.get('crop') or '—'}.")
-    if alerts:
-        lines.append("⚠ " + " ⚠ ".join(alerts))
+    lines.append(f"Путевой лист №{wb['number']}: водитель {driver}, груз {crop}, {wb['task']['from']}.")
+    lines.extend(f"⚠ {a}" for a in alerts)   # каждое предупреждение — своей строкой
     objects = report["summary"]
+    # Ссылки на файлы (кадр, JSON, CSV) интерфейс показывает строкой под ответом — в тексте не повторяем
     lines.append(f"На кадре: техники {objects['vehicles_or_equipment']}, людей {objects['people']}, "
-                 f"номеров прочитано {objects['plates_read']}. Файлы: размеченный кадр, JSON, CSV.")
+                 f"номеров прочитано {objects['plates_read']}.")
 
     payload = {
         "vehicle": vehicle, "trip": trip, "event_kind": event_kind, "weight": weight, "alerts": alerts,
@@ -452,6 +478,23 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
         "recognized_by_appearance": recognized_by_appearance,
         "report_summary": objects, "processing_seconds": report.get("processing_seconds"),
         "vlm_used": bool(appearance.get("source")),
+        # Для таблицы в чате и у руководителя: то, чего нет в профиле машины и рейсе.
+        # Номер, вес, водителя и культуру таблица берёт из vehicle/trip — их обновляет правка события.
+        "details": {
+            "equipment_type": main.get("equipment_type"), "manufacturer": main.get("manufacturer"),
+            "country": main.get("manufacturer_country"), "model": model_txt, "year": main.get("year"),
+            "identified_by": _identified_by(main, registry_status, registry_record, bool(appearance.get("source"))),
+            "appearance": appearance.get("description"),
+            "registry": _registry_text(registry_status, registry_record),
+            "plate_guess": plate_info.get("formatted") if plate_info.get("text") and not plate_info.get("readable")
+            and not guard.get("plate_override") else None,
+            "recognized": (f"узнана по внешности: профиль №{recognized_by_appearance['vehicle_id']} "
+                           f"(сходство {recognized_by_appearance['similarity']:.0%})") if recognized_by_appearance else None,
+            "plateless_match": f"профиль №{plateless_match['id']} без номера получил этот номер" if plateless_match else None,
+            "event_time": event_time, "time_note": time_note, "warehouse": wh["name"],
+            "waybill": wb, "driver_source": "весовщик" if guard.get("driver") else f"путевой лист №{wb['number']}",
+            "note": guard.get("note") or None,
+        },
     }
     ai_id = db.add_message({
         "created_at": now_iso(), "role": "ai", "text": "\n".join(lines), "image": files.get("annotated"),
@@ -466,6 +509,40 @@ def _analyze_and_reply(capture_id: str, guard: dict, image: Path, wh: dict, crea
 
 
 # ---------- исправление ошибки весовщицы ----------
+
+def _registry_text(status: str, record: dict | None) -> str | None:
+    """Строка «Реестр» для таблицы ответа — те же слова, что и в тексте."""
+    if status == registry.FOUND and record:
+        return (f"{record.get('marka_raw') or ''} {record.get('year') or ''} г., "
+                f"тип: {record.get('type') or '—'}").strip()
+    if status == registry.NOT_FOUND:
+        return "номер не найден (открытый набор неполный)"
+    if status == registry.UNAVAILABLE:
+        return "недоступен (нет сети или таймаут) — номер не проверялся"
+    return None
+
+
+def _identified_by(main: dict, registry_status: str, registry_record: dict | None, vlm_used: bool) -> str | None:
+    """Откуда марка и модель: реестр по номеру, надпись на технике, обученная модель или VLM."""
+    def source(conf: str | None, value) -> str | None:
+        conf = conf or ""
+        if not value:
+            return None
+        if "реестр" in conf:
+            return "реестр data.egov.kz по номеру"
+        if analyze.FALLBACK_SOURCE in conf:
+            return analyze.FALLBACK_SOURCE
+        if "надпись" in conf:
+            return "надпись на технике"
+        return "VLM по фото" if vlm_used else None
+
+    model = main.get("model") if main.get("model") not in (None, "", "не определена") else None
+    make_src = source(main.get("manufacturer_confidence"), main.get("manufacturer"))
+    model_src = source(main.get("model_confidence"), model)
+    if make_src and model_src and make_src != model_src:
+        return f"марка — {make_src}; модель — {model_src}"
+    return make_src or model_src
+
 
 def _kind_ru(kind: str) -> str:
     return "заезд" if kind == "entry" else "выезд"
@@ -529,6 +606,15 @@ def undo_last_event() -> dict:
     })
     return {"ok": True, "undone": ev["kind"], "trip_id": ev.get("trip_id"),
             "ai_message": db.get_message(ai_id)}
+
+
+# Раньше подсказка в поле веса была «пусто = весы», и весовщица так и писала «пусто».
+EMPTY_WEIGHT_WORDS = {"", "пусто", "пустой", "нет", "-", "—", "–"}
+
+
+def _weight_left_empty(raw) -> bool:
+    """Вес не введён: поле пустое или в нём слово вроде «пусто» — берём вес с весов, без предупреждения."""
+    return raw is None or str(raw).strip().lower() in EMPTY_WEIGHT_WORDS
 
 
 def _parse_weight(raw) -> float:
@@ -621,21 +707,89 @@ def edit_last_event(changes: dict) -> dict:
 
 # ---------- сводки для панелей ----------
 
+# Тревоги рейсов по видам — руководителю важнее «вес введён с ошибкой ×3», чем три одинаковых строки.
+ALERT_KINDS = [
+    ("номер не прочитан", ("Номер не прочитан",)),
+    ("вес введён с ошибкой", ("не похож на число", "— не число", "Вес должен", "слишком велик")),
+    ("выезд тяжелее заезда", ("тяжелее заезда",)),
+    ("груз не подтверждён", ("заезжает пустой", "выглядит гружёным")),
+    ("пропал прицеп", ("прицепа нет",)),
+    ("склад не выбран", ("Склад не выбран", "неизвестен — записан")),
+    ("слишком быстрый оборот", ("быстрый оборот",)),
+    ("рейс долго открыт", ("Рейс был открыт",)),
+    ("часы камеры сбиты", ("раньше времени заезда",)),
+    ("заезд и выезд через разные склады", ("выезд через",)),
+    ("нетто не посчитано", ("нетто не посчитано",)),
+]
+
+
+def _alert_kind(text: str) -> str:
+    return next((kind for kind, keys in ALERT_KINDS if any(k in text for k in keys)), "прочее")
+
+
+def _crop_name(crop: str | None) -> str:
+    """«пшеница» и «Пшеница» — одна культура; опечатки не исправляем, показываем как ввели."""
+    crop = (crop or "").strip()
+    return crop[:1].upper() + crop[1:].lower() if crop else "культура не указана"
+
+
 def warehouse_summary(wh: dict) -> dict:
     trips = db.list_trips(warehouse_id=wh["id"])
     open_trips = [t for t in trips if t["status"] == "open"]
     closed = [t for t in trips if t["status"] == "closed"]
     last_entry = max(trips, key=lambda t: t["entry_time"] or "") if trips else None
     last_exit = max(closed, key=lambda t: t["exit_time"] or "") if closed else None
-    load_t = round(sum(t.get("net_weight") or 0 for t in closed), 2)
+    # Нетто = брутто на заезде − тара на выезде. Плюс — груз оставили на складе (приёмка),
+    # минус — машина уехала тяжелее, то есть груз взяли со склада (отгрузка). Складывать их нельзя:
+    # раньше «принято» показывало −1 т, когда была одна отгрузка.
+    nets = [t for t in closed if t.get("net_weight") is not None]
+    received = round(sum(t["net_weight"] for t in nets if t["net_weight"] > 0), 2)
+    shipped = round(sum(-t["net_weight"] for t in nets if t["net_weight"] < 0), 2)
+    by_crop: dict[str, dict] = {}
+    for t in nets:
+        c = by_crop.setdefault(_crop_name(t.get("crop")), {"received_t": 0.0, "shipped_t": 0.0, "trips": 0})
+        c["received_t" if t["net_weight"] > 0 else "shipped_t"] += abs(t["net_weight"])
+        c["trips"] += 1
+    for c in by_crop.values():
+        c["received_t"], c["shipped_t"] = round(c["received_t"], 2), round(c["shipped_t"], 2)
+    alert_kinds: dict[str, int] = {}
+    for t in trips:
+        for a in t.get("alerts") or []:
+            alert_kinds[_alert_kind(a)] = alert_kinds.get(_alert_kind(a), 0) + 1
+    # Время на весовой считаем, только если заезд и выезд взяты из одного источника (оба с кадра или оба
+    # системные) и рейс уложился в смену: дольше — это сбитые часы камеры (2019 год на надписи) или
+    # пропущенный выезд, и одно такое значение превращало среднее в «67 100 ч».
+    turnaround = []
+    for t in closed:
+        if t.get("entry_time_source") == t.get("exit_time_source"):
+            minutes = _minutes_between(t.get("entry_time"), t.get("exit_time"))
+            if minutes is not None and 0 <= minutes <= MAX_OPEN_HOURS * 60:
+                turnaround.append(minutes)
+    now = []
+    for t in sorted(open_trips, key=lambda t: t.get("entry_time") or ""):
+        alerts = t.get("alerts") or []
+        now.append({"vehicle": db.get_vehicle(t["vehicle_id"]), "trip_id": t["id"], "entry_time": t.get("entry_time"),
+                    "entry_weight": t.get("entry_weight"), "driver": t.get("driver"), "crop": t.get("crop"),
+                    "alerts": alerts,
+                    "status": "есть замечания" if alerts else "на складе, ждём выезда"})
     return {
         **wh,
         "count_now": len(open_trips),
-        "vehicles_now": [db.get_vehicle(t["vehicle_id"]) for t in open_trips],
+        "vehicles_now": [n["vehicle"] for n in now],
+        "on_site": now,
         "last_entry": {**last_entry, "vehicle": db.get_vehicle(last_entry["vehicle_id"])} if last_entry else None,
         "last_exit": {**last_exit, "vehicle": db.get_vehicle(last_exit["vehicle_id"])} if last_exit else None,
-        "load_t": load_t,
-        "load_pct": min(100, round(100 * load_t / wh["capacity_t"])) if wh.get("capacity_t") else 0,
+        "received_t": received,
+        "shipped_t": shipped,
+        "awaiting_gross_t": round(sum(t.get("entry_weight") or 0 for t in open_trips), 2),
+        "by_crop": dict(sorted(by_crop.items(), key=lambda kv: -(kv[1]["received_t"] + kv[1]["shipped_t"]))),
+        "trips_open": len(open_trips), "trips_closed": len(closed),
+        "alert_kinds": dict(sorted(alert_kinds.items(), key=lambda kv: -kv[1])),
+        "avg_turnaround_min": round(sum(turnaround) / len(turnaround)) if turnaround else None,
+        "turnaround_trips": len(turnaround),
+        # load_t — принятое на склад (для полоски заполнения на карте), только положительное нетто
+        "load_t": received,
+        "load_pct": min(100, round(100 * received / wh["capacity_t"])) if wh.get("capacity_t") else 0,
         "trips_total": len(trips),
         "alerts": sum(len(t.get("alerts") or []) for t in trips),
     }
@@ -658,6 +812,7 @@ def state() -> dict:
         "camera": {"frames": frames, "used": used, "next": next((f for f in frames if f not in set(used)), None),
                    "folder": str(config.DATA_DIR)},
         "vlm": vlm_status,
+        "scale": scale.status(),
         # Старые ключи — для совместимости с интерфейсом.
         "vlm_enabled": vlm_status["enabled"],
         "vlm_model": vlm_status["model"] if vlm_status["enabled"] else None,

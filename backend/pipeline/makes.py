@@ -16,6 +16,7 @@ COUNTRY_BY_MAKE = {
     "shacman": "Китай", "shaanxi": "Китай", "howo": "Китай", "sinotruk": "Китай",
     "faw": "Китай", "dongfeng": "Китай", "foton": "Китай", "jac": "Китай", "sany": "Китай",
     "xcmg": "Китай", "sdlg": "Китай", "lonking": "Китай", "camc": "Китай", "beiben": "Китай",
+    "lovol": "Китай", "ловол": "Китай",
     "scania": "Швеция", "volvo": "Швеция",
     "man": "Германия", "mercedes": "Германия", "daf": "Нидерланды", "iveco": "Италия",
     "renault": "Франция",

@@ -61,5 +61,44 @@ VLM_ENABLED = os.environ.get("VLM_ENABLED", "auto")
 # Глубина рассуждений: low дешевле и быстрее; medium/high — если качество марки/модели не устроит.
 VLM_EFFORT = os.environ.get("VLM_EFFORT", "low")
 
+# Весы на COM-порту. Реального весового терминала нет — показания имитируются (backend/scale.py).
+SCALE_PORT = os.environ.get("SCALE_PORT", "COM3")
+SCALE_BAUD = int(os.environ.get("SCALE_BAUD", "9600"))
+
+# Запасной классификатор (SigLIP2 + обученные головы, backend/pipeline/fallback.py): тип, марка и модель
+# по виду машины — когда номер не прочитан или марка/модель не определены. "auto" — включить, если есть
+# файл голов и пакет transformers; "off" — не использовать. Веса SigLIP2 скачиваются при первом запуске.
+FALLBACK_ENABLED = os.environ.get("FALLBACK_ENABLED", "auto")
+FALLBACK_HEAD = os.environ.get("FALLBACK_HEAD", str(ROOT / "backend" / "pipeline" / "fallback_head.npz"))
+
+def _cpu_limit() -> int:
+    """Сколько ядер процессора реально доступно. В контейнере организаторов видно 8 ядер, а квота
+    cgroup — 2: библиотеки запускают 8 потоков, система их всё время притормаживает, и номер
+    читается 36 с вместо долей секунды. Вне контейнера квоты нет — берём все ядра."""
+    try:
+        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]
+        if quota != "max":
+            return max(1, int(quota) // int(period))
+    except (OSError, ValueError):
+        pass
+    return os.cpu_count() or 1
+
+
+CPU_THREADS = int(os.environ.get("CPU_THREADS") or _cpu_limit())
+
+
+def cpu_threads_limited() -> bool:
+    return CPU_THREADS < (os.cpu_count() or 1)
+
+
+def limit_cpu_threads() -> None:
+    """Потоки torch и OpenCV — по квоте процессора. Вызывается при загрузке моделей."""
+    if cpu_threads_limited():
+        import cv2
+        import torch
+        torch.set_num_threads(CPU_THREADS)
+        cv2.setNumThreads(CPU_THREADS)
+
+
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8000"))
